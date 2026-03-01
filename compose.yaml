@@ -21,6 +21,29 @@ services:
 
     volumes:
       - kafka-data:/var/lib/kafka/data
+ 
+  mysql:
+     image: mysql:8.3
+     container_name: mysql
+     ports:
+       - "3306:3306"
+     environment:
+       MYSQL_DATABASE: cadence
+       MYSQL_USER: cadence
+       MYSQL_PASSWORD: cadence
+       MYSQL_ROOT_PASSWORD: root
+     command:
+       - "--character-set-server=utf8mb4"
+       - "--collation-server=utf8mb4_unicode_ci"
+     volumes:
+       - mysql-data:/var/lib/mysql
+     healthcheck:
+       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+       interval: 10s
+       timeout: 5s
+       retries: 5
+       start_period: 30s
 
 volumes:
   kafka-data:
+  mysql-data:
