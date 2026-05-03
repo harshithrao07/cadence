@@ -1,0 +1,37 @@
+{
+  "name": "cadence-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@heroicons/react": "^2.2.0",
+    "@material-tailwind/react": "^2.1.10",
+    "@next/env": "^15.4.6",
+    "axios": "^1.12.2",
+    "date-fns": "^4.1.0",
+    "framer-motion": "^12.33.0",
+    "lucide-react": "^0.544.0",
+    "next": "^16.1.6",
+    "react": "19.1.0",
+    "react-day-picker": "^9.8.1",
+    "react-dom": "19.1.0",
+    "react-icons": "^5.5.0",
+    "sonner": "^2.0.7"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "24.6.1",
+    "@types/react": "19.1.16",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^9",
+    "eslint-config-next": "15.4.6",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17"
+  }
+}

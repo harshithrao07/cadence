@@ -1,35 +1,47 @@
-HELP.md
+# Secrets
+env.properties
+*.env
+.env
+.env.local
+
+# Maven
 target/
+*.jar
 !.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-
-### IntelliJ IDEA ###
+# IntelliJ
 .idea/
-*.iws
 *.iml
 *.ipr
+*.iws
+out/
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-### VS Code ###
+# VS Code
 .vscode/
 
-env.properties
+# Eclipse
+.classpath
+.project
+.settings/
+bin/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend (cadence-frontend)
+node_modules/
+dist/
+build/
+.next/
+.cache/
+
+# Spring Boot scaffolding noise
+HELP.md
+
+# Claude Code session data
+.claude/
