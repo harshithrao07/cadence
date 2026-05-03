@@ -1,10 +1,11 @@
 package com.cadence.streaming_service.filter;
 
+import com.cadence.streaming_service.config.GatewaySecretProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.annotation.Value;
+import lombok.RequiredArgsConstructor;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -14,12 +15,12 @@ import java.io.IOException;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
+@RequiredArgsConstructor
 public class InternalTrafficFilter extends OncePerRequestFilter {
 
     private static final String GATEWAY_SECRET_HEADER = "X-Gateway-Secret";
 
-    @Value("${gateway.secret}")
-    private String expectedSecret;
+    private final GatewaySecretProperties gatewayProperties;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -32,8 +33,8 @@ public class InternalTrafficFilter extends OncePerRequestFilter {
         }
 
         String secretHeader = request.getHeader(GATEWAY_SECRET_HEADER);
-        
-        if (secretHeader == null || !secretHeader.equals(expectedSecret)) {
+
+        if (secretHeader == null || !secretHeader.equals(gatewayProperties.getSecret())) {
             response.setStatus(HttpServletResponse.SC_FORBIDDEN);
             response.setContentType("application/json");
             response.getWriter().write("{\"error\": \"Direct access forbidden\"}");

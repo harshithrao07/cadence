@@ -1,8 +1,8 @@
 package com.cadence.gateway_service.filter;
 
+import com.cadence.gateway_service.config.GatewaySecretProperties;
 import com.cadence.gateway_service.utils.JwtUtil;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -27,9 +27,6 @@ public class AuthenticationGlobalFilter implements GlobalFilter, Ordered {
     private static final String GATEWAY_SECRET_HEADER = "X-Gateway-Secret";
     private static final String BEARER_PREFIX = "Bearer ";
 
-    @Value("${gateway.secret}")
-    private String gatewaySecret;
-
     private static final List<String> PUBLIC_PATH_PREFIXES = List.of(
             "/auth/",
             "/app/",
@@ -38,6 +35,7 @@ public class AuthenticationGlobalFilter implements GlobalFilter, Ordered {
     );
 
     private final JwtUtil jwtUtil;
+    private final GatewaySecretProperties gatewayProperties;
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
@@ -101,7 +99,7 @@ public class AuthenticationGlobalFilter implements GlobalFilter, Ordered {
                 .header(USER_ID_HEADER, identity.userId())
                 .header(USER_EMAIL_HEADER, identity.email())
                 .header(USER_ROLE_HEADER, identity.role())
-                .header(GATEWAY_SECRET_HEADER, gatewaySecret)
+                .header(GATEWAY_SECRET_HEADER, gatewayProperties.getSecret())
                 .build();
 
         return exchange.mutate().request(request).build();

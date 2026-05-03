@@ -1,34 +1,34 @@
 package com.cadence.auth_service.filter;
 
+import com.cadence.auth_service.config.GatewaySecretProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class InternalTrafficFilterTest {
 
-    @Mock private FilterChain filterChain;
-
-    @InjectMocks
-    private InternalTrafficFilter filter;
-
     private static final String VALID_SECRET = "test-secret";
+
+    private FilterChain filterChain;
+    private InternalTrafficFilter filter;
 
     @BeforeEach
     void setUp() {
-        ReflectionTestUtils.setField(filter, "expectedSecret", VALID_SECRET);
+        filterChain = mock(FilterChain.class);
+        GatewaySecretProperties props = new GatewaySecretProperties();
+        props.setSecret(VALID_SECRET);
+        filter = new InternalTrafficFilter(props);
     }
 
     // ── always-allowed paths ──────────────────────────────────────────────────

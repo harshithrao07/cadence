@@ -199,6 +199,7 @@ public class RecordService {
         }
     }
 
+    @Transactional
     public ResponseEntity<ApiResponseDTO<List<RecordPreviewDTO>>> getAllRecordsByArtistId(String artistId) {
         try {
             Artist artist = artistRepository.findById(artistId).orElse(null);
@@ -235,6 +236,7 @@ public class RecordService {
         }
     }
 
+    @Transactional
     public ResponseEntity<ApiResponseDTO<RecordPreviewDTO>> getRecordById(String recordId) {
         try {
             Record record = recordRepository.findById(recordId).orElse(null);
