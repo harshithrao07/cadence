@@ -5,7 +5,7 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 
-@FeignClient(name = "auth-service")
+@FeignClient(name = "auth-service", fallback = UserPreviewClientFallback.class)
 public interface UserPreviewClient {
 
     @GetMapping("/internal/users/{userId}/preview")

@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 
 import java.util.List;
 
-@FeignClient(name = "catalog-service")
+@FeignClient(name = "catalog-service", fallback = CatalogPreviewClientFallback.class)
 public interface CatalogPreviewClient {
 
     @PostMapping("/internal/songs/preview")

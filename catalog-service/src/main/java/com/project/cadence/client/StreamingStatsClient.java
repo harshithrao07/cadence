@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import java.time.Instant;
 import java.util.List;
 
-@FeignClient(name = "streaming-service")
+@FeignClient(name = "streaming-service", fallback = StreamingStatsClientFallback.class)
 public interface StreamingStatsClient {
 
     default List<SongPlayCountDTO> getTrendingSongs(Instant since, int page, int size) {

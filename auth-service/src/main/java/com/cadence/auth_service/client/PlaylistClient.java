@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
 
-@FeignClient(name = "playlist-service")
+@FeignClient(name = "playlist-service", fallback = PlaylistClientFallback.class)
 public interface PlaylistClient {
 
     default List<PlaylistPreviewDTO> searchPlaylists(int page, int size, String key) {
