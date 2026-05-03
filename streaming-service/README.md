@@ -114,6 +114,12 @@ Single table, composite `@EmbeddedId` of `(user_id, song_id)`. Indexes:
 
 This service does not produce or consume Kafka events. Plays are recorded synchronously via HTTP — there's no benefit to going async because the call is on the critical path of the audio player anyway.
 
+## Cross-Cutting Concerns
+
+- **Outbound Feign call** to `CatalogClient.getStreamingMetadata` goes through `FeignClientConfig.gatewaySecretInterceptor` which stamps `X-Gateway-Secret` on every request. Required for catalog-service's `InternalTrafficFilter` to accept the call.
+- **Resilience4j circuit breaker** wraps `CatalogClient`. `CatalogClientFallback` returns null on catalog outage — `streamSongById` already maps null metadata to 404, so the user sees "song not found" instead of a 500 / hang.
+- **`/actuator/refresh` rebinds `gateway.secret`** via `GatewaySecretProperties` for hot rotation without a restart.
+
 ## Configuration
 
 Local `application.properties`:

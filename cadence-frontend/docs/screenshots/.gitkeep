@@ -1,0 +1,11 @@
+# Screenshots referenced in ../../README.md.
+# Capture and drop the PNGs here with the filenames the README expects:
+#
+#   discover.png
+#   artist-detail.png
+#   playlist.png
+#   player.png
+#   auth.png
+#   admin-add-record.png
+#
+# This .gitkeep makes git track the empty folder until you add captures.

@@ -42,7 +42,10 @@ public class AuthenticationGlobalFilter implements GlobalFilter, Ordered {
         ServerWebExchange cleanExchange = removeClientIdentityHeaders(exchange);
 
         if (isPublicRequest(cleanExchange)) {
-            return chain.filter(cleanExchange);
+            // Public path: no JWT required, but we still stamp X-Gateway-Secret so
+            // the backend's InternalTrafficFilter knows this came through the gateway
+            // and not a direct hit on the backend port.
+            return chain.filter(addGatewaySecret(cleanExchange));
         }
 
         String token = extractBearerToken(cleanExchange.getRequest().getHeaders());
@@ -56,6 +59,13 @@ public class AuthenticationGlobalFilter implements GlobalFilter, Ordered {
         }
 
         return chain.filter(addIdentityHeaders(cleanExchange, identity));
+    }
+
+    private ServerWebExchange addGatewaySecret(ServerWebExchange exchange) {
+        ServerHttpRequest request = exchange.getRequest().mutate()
+                .header(GATEWAY_SECRET_HEADER, gatewayProperties.getSecret())
+                .build();
+        return exchange.mutate().request(request).build();
     }
 
     @Override

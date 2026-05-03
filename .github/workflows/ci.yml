@@ -87,3 +87,51 @@ jobs:
       - name: Compile + package (skip tests)
         working-directory: ${{ matrix.service }}
         run: ./mvnw -B -ntp -DskipTests package
+
+  coverage-summary:
+    name: coverage-summary
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need a writable token to push the README update back.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Fetch full history so we can detect "nothing to commit" cleanly.
+          fetch-depth: 0
+
+      - name: Download all JaCoCo artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: jacoco-*
+          # Each artifact unpacks into <name>/, e.g. jacoco-auth-service/.
+          # We then mirror them into <service>/target/site/jacoco/ which is what
+          # the script expects.
+          path: jacoco-artifacts
+
+      - name: Stage reports where the script expects them
+        run: |
+          for dir in jacoco-artifacts/jacoco-*; do
+            svc=$(basename "$dir" | sed 's/^jacoco-//')
+            mkdir -p "$svc/target/site/jacoco"
+            cp -r "$dir"/* "$svc/target/site/jacoco/"
+          done
+          rm -rf jacoco-artifacts
+
+      - name: Regenerate coverage table in README
+        run: bash scripts/coverage-summary.sh
+
+      - name: Commit and push if README changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet README.md; then
+            echo "Coverage table unchanged — nothing to commit."
+            exit 0
+          fi
+          git add README.md
+          git commit -m "ci: regenerate coverage table [skip ci]"
+          git push

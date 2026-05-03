@@ -80,14 +80,27 @@ Adding or changing a route is a config change in `gateway-service.properties` �
 
 `AuthenticationGlobalFilter` is a `GlobalFilter` (runs on every route). Its job:
 
-1. **Skip on public routes** — anything under `/auth/**`, `/app/**`, `/oauth2/**`, `/login/**` is unauthenticated.
+1. **Skip JWT check on public routes** — anything under `/auth/**`, `/app/**`, `/oauth2/**`, `/login/**` doesn't require a Bearer token.
 2. **Validate JWT** for everything else: parse `Authorization: Bearer <jwt>`, verify signature against `JWT_SECRET_KEY`, check expiry.
 3. **Extract `userId`** from the JWT's `userId` claim.
 4. **Mutate the downstream request** to add:
    - `X-User-Id: <userId>` — so backend services don't need to re-parse the JWT.
    - `X-Gateway-Secret: <GATEWAY_SECRET>` — proves to backend services that the request came through the gateway.
 
+**Public paths still get `X-Gateway-Secret`** even though they skip the JWT step. The two concerns are separate: "does this request need a user identity" (skipped on public paths) vs "did this come through the gateway" (always required). Without the secret on public paths, OAuth2 flows like `/oauth2/authorization/google` would 403 against the backend's `InternalTrafficFilter`.
+
 If the JWT is missing or invalid on a protected route, the gateway returns `401` without ever touching the backend.
+
+## CORS
+
+`CorsConfig` registers a reactive `CorsWebFilter` — Spring Cloud Gateway's reactive stack ignores the servlet-style `addCorsMappings` config, so the bean approach is required.
+
+- Allowed origins read from `frontend.url` in centralized config (`gateway-service.properties`); defaults to `http://localhost:3000`. Override via `FRONTEND_URL` env var or supply a comma-separated list for multiple origins.
+- Methods: `GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD`.
+- Exposes `Authorization`, `Content-Type`, `Content-Range`, `Accept-Ranges` so the audio player can read range responses.
+- Credentials enabled, 1-hour preflight cache.
+
+**The gateway is the only service that emits CORS headers.** Backend services explicitly disable Spring Security CORS (e.g., `auth-service.SecurityConfig`) — having multiple emitters causes the browser to reject responses with "multiple values in `Access-Control-Allow-Origin`".
 
 ## Inter-Service Authentication Boundary
 

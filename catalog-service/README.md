@@ -198,6 +198,12 @@ erDiagram
 
 The producer pre-fetches follower emails synchronously (so the consumer doesn't have to call back into catalog-service). Topic auto-created via `NewTopic` bean (3 partitions, 1 replica).
 
+## Cross-Cutting Concerns
+
+- **Outbound Feign calls** (`PlaylistClient` for global search, `StreamingStatsClient` for the discover feed) go through `FeignClientConfig.gatewaySecretInterceptor` which stamps `X-Gateway-Secret` on every request. Without it, the destination's `InternalTrafficFilter` would 403 the call.
+- **Resilience4j circuit breakers** wrap both Feign clients. `PlaylistClientFallback` returns an empty `ApiResponseDTO` so search still returns artists/records/songs when `playlist-service` is down. `StreamingStatsClientFallback` returns empty trending/recently-played/top-songs sections so the discover feed still renders the popular-artists and new-releases sections when `streaming-service` is down.
+- **`/actuator/refresh` rebinds `gateway.secret`** via `GatewaySecretProperties` for hot rotation without a restart.
+
 ## Configuration
 
 Local `application.properties`:

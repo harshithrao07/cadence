@@ -1,49 +1,229 @@
 services:
+  mysql:
+    image: mysql:8.3
+    container_name: cadence-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_DATABASE: cadenceDB
+      MYSQL_ROOT_PASSWORD: password
+    command:
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+    volumes:
+      - cadence-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-ppassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   kafka:
     image: apache/kafka:3.7.0
-    container_name: kafka
+    container_name: cadence-kafka
     ports:
       - "9092:9092"
-
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
 
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # Two PLAINTEXT listeners: INTERNAL for in-network containers,
+      # HOST for the developer's machine (tests, local CLIs).
+      KAFKA_LISTENERS: INTERNAL://:29092,HOST://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
 
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
 
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-
       KAFKA_LOG_DIRS: /var/lib/kafka/data
-
     volumes:
-      - kafka-data:/var/lib/kafka/data
- 
-  mysql:
-     image: mysql:8.3
-     container_name: mysql
-     ports:
-       - "3306:3306"
-     environment:
-       MYSQL_DATABASE: cadence
-       MYSQL_USER: cadence
-       MYSQL_PASSWORD: cadence
-       MYSQL_ROOT_PASSWORD: root
-     command:
-       - "--character-set-server=utf8mb4"
-       - "--collation-server=utf8mb4_unicode_ci"
-     volumes:
-       - mysql-data:/var/lib/mysql
-     healthcheck:
-       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
-       interval: 10s
-       timeout: 5s
-       retries: 5
-       start_period: 30s
+      - cadence-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  discovery-service:
+    build:
+      context: ./discovery-service
+    container_name: cadence-discovery
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8761/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  config-server:
+    build:
+      context: ./config-server
+    container_name: cadence-config
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/auth-service/default >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  auth-service:
+    build:
+      context: ./auth-service
+    container_name: cadence-auth
+    env_file:
+      - env.properties
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      KAFKA_URL: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+
+  catalog-service:
+    build:
+      context: ./catalog-service
+    container_name: cadence-catalog
+    env_file:
+      - env.properties
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      KAFKA_URL: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+
+  playlist-service:
+    build:
+      context: ./playlist-service
+    container_name: cadence-playlist
+    env_file:
+      - env.properties
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      KAFKA_URL: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+
+  streaming-service:
+    build:
+      context: ./streaming-service
+    container_name: cadence-streaming
+    env_file:
+      - env.properties
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    depends_on:
+      mysql:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+
+  notification-service:
+    build:
+      context: ./notification-service
+    container_name: cadence-notification
+    env_file:
+      - env.properties
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      KAFKA_URL: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+
+  gateway-service:
+    build:
+      context: ./gateway-service
+    container_name: cadence-gateway
+    ports:
+      - "8080:8080"
+    env_file:
+      - env.properties
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # CORS origins the browser is allowed to call from. Override to add
+      # production domains as a comma-separated list.
+      FRONTEND_URL: http://localhost:3000
+    depends_on:
+      discovery-service:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
+      playlist-service:
+        condition: service_started
+      streaming-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./cadence-frontend
+      args:
+        # NEXT_PUBLIC_* vars are inlined into the client bundle at build time.
+        # The browser hits the host-published gateway port, not docker DNS.
+        NEXT_PUBLIC_API_URL: http://localhost:8080/
+    container_name: cadence-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      gateway-service:
+        condition: service_started
 
 volumes:
-  kafka-data:
-  mysql-data:
+  cadence-mysql-data:
+  cadence-kafka-data:

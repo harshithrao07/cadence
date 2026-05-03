@@ -163,6 +163,12 @@ Three things worth noting about the data model:
 
 Consumer auto-startup is enabled in production; tests disable it via `spring.kafka.listener.auto-startup=false` so they don't try to bind to a non-running broker.
 
+## Cross-Cutting Concerns
+
+- **Outbound Feign calls** (`UserPreviewClient` → auth-service, `CatalogPreviewClient` → catalog-service) go through `FeignClientConfig.gatewaySecretInterceptor` which stamps `X-Gateway-Secret` on every request. Required for the destination's `InternalTrafficFilter` to accept the call.
+- **Resilience4j circuit breakers** wrap both clients. `UserPreviewClientFallback` returns null (playlists render without owner avatar). `CatalogPreviewClientFallback` returns empty list — `getSongsFromPlaylist` returns nothing when catalog is down, and `addSongToPlaylist` rejects with "Song not found" rather than silently accepting unverifiable IDs.
+- **`/actuator/refresh` rebinds `gateway.secret`** via `GatewaySecretProperties` for hot rotation without a restart.
+
 ## Configuration
 
 Local `application.properties`:

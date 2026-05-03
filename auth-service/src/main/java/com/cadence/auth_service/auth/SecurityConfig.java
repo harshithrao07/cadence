@@ -60,7 +60,11 @@ public class SecurityConfig {
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .csrf(AbstractHttpConfigurer::disable)
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                // CORS is handled centrally by the gateway (gateway-service.CorsConfig).
+                // Backend services aren't browser-facing — adding CORS headers here
+                // duplicates what the gateway emits and causes the browser to reject
+                // the response with "multiple values in Access-Control-Allow-Origin".
+                .cors(AbstractHttpConfigurer::disable)
                 .addFilterBefore(jwtValidationFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterAfter(jwtRefreshFilter, JwtValidationFilter.class)
                 .oauth2Login(oauth2 -> oauth2.successHandler(customOAuth2SuccessHandler))

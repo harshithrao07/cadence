@@ -27,43 +27,61 @@ The platform is built around the principle that **one service owns one bounded c
 
 ## Getting Started
 
+The whole stack is dockerised — one command brings up MySQL, Kafka, all 8 backend services, and the frontend.
+
 ```bash
-git clone https://github.com/<your-username>/cadence.git
+git clone https://github.com/harshithrao07/cadence.git
 cd cadence
 
-# 1. Local infra (Kafka + MySQL)
-docker compose up -d
+# 1. Create env.properties at the repo root (see Centralized Configuration)
 
-# 2. Create env.properties at the repo root (see Centralized Configuration)
+# 2. Build and start everything
+docker compose up --build -d
 
-# 3. Boot services in order — separate terminals (each blocks)
-(cd discovery-service    && ./mvnw spring-boot:run)
-(cd config-server        && ./mvnw spring-boot:run)
-(cd auth-service         && ./mvnw spring-boot:run)
-(cd catalog-service      && ./mvnw spring-boot:run)
-(cd playlist-service     && ./mvnw spring-boot:run)
-(cd streaming-service    && ./mvnw spring-boot:run)
-(cd notification-service && ./mvnw spring-boot:run)
-(cd gateway-service      && ./mvnw spring-boot:run)
+# 3. (Optional) Seed the database with realistic fake data
+cd cadence-seed
+npm install
+node seed.js
 ```
+
+The compose file orchestrates **boot order via healthchecks**: MySQL + Kafka come up first, then discovery-service + config-server, then the backend services, then the gateway, then the frontend. Total cold-start is ~2-3 minutes (most of it is Maven downloads on first build; subsequent `up` calls take ~30s).
 
 Useful local URLs:
 
 | Surface | URL | Purpose |
 |---|---|---|
-| Gateway | `http://localhost:8080` | Public entry point — all client traffic goes here |
+| **Frontend** | `http://localhost:3000` | The user-facing Next.js app |
+| Gateway | `http://localhost:8080` | API entry point — all client traffic goes here |
 | Eureka dashboard | `http://localhost:8761` | See which services have registered |
 | Config Server | `http://localhost:8888` | `GET /<service>/<profile>` to inspect served config |
 | Kafka broker | `localhost:9092` | KRaft, single broker, no Zookeeper |
-| MySQL | `localhost:3306` | DB `cadence`, user `cadence`, password `cadence` |
+| MySQL | `localhost:3306` | DB `cadenceDB`, user `root`, password `password` |
 
-Run the full test suite (unit + integration via Testcontainers):
+### Running locally without Docker
+
+For active development on a single service (faster reload, easier debugging), you can run that one service from your IDE / `./mvnw spring-boot:run` while leaving the rest of the stack in Docker. Stop the container of the service you want to run locally:
+
+```bash
+docker compose stop auth-service
+(cd auth-service && ./mvnw spring-boot:run)   # uses env.properties for secrets
+```
+
+Your local instance registers with the dockerized Eureka and fetches config from the dockerized config-server.
+
+### Running tests
 
 ```bash
 ./run-all-tests.sh
 ```
 
-Stop infra with `docker compose down`. Use `docker compose down -v` to wipe Kafka logs and MySQL data.
+Tests use Testcontainers — they spin up their own MySQL + Kafka containers, independent of the docker compose stack. See [TESTING.md](TESTING.md).
+
+### Stopping
+
+```bash
+docker compose down            # stop containers, keep data
+docker compose down -v         # stop + wipe MySQL and Kafka volumes
+```
 
 ---
 
@@ -224,9 +242,9 @@ flowchart LR
 JWT_SECRET_KEY=replace-with-strong-secret-at-least-32-bytes
 GATEWAY_SECRET=any-shared-secret
 
-DATASOURCE_URL=jdbc:mysql://localhost:3306/cadence?useSSL=false&serverTimezone=UTC
-DATASOURCE_USERNAME=cadence
-DATASOURCE_PASSWORD=cadence
+DATASOURCE_URL=jdbc:mysql://localhost:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+DATASOURCE_USERNAME=root
+DATASOURCE_PASSWORD=password
 
 FRONTEND_URL=http://localhost:5173
 BACKEND_URL=http://localhost:8080
@@ -285,7 +303,8 @@ flowchart LR
 ```
 
 - **JWT** issued by auth-service, validated by gateway's `AuthenticationGlobalFilter`. Extracted `userId` becomes `X-User-Id` for downstream services.
-- **Gateway secret** (`GATEWAY_SECRET` env var, shared between gateway and backends) sent as `X-Gateway-Secret` on every forwarded request. Backend services have an `InternalTrafficFilter` that rejects requests missing this header — defense against direct port access if backend services are exposed by accident.
+- **Gateway secret** (`GATEWAY_SECRET` env var, shared between gateway and backends) sent as `X-Gateway-Secret` on every forwarded request — including public paths like `/oauth2/**` where no JWT is involved. Backend services have an `InternalTrafficFilter` that rejects requests missing this header — defense against direct port access if backend services are exposed by accident.
+- **Feign clients also stamp `X-Gateway-Secret`** via a `RequestInterceptor` (`FeignClientConfig` in each Feign-using service), since service-to-service Feign calls pass through the same `InternalTrafficFilter` as gateway-forwarded requests.
 
 ---
 
@@ -364,7 +383,7 @@ Activate with `SPRING_PROFILES_ACTIVE=dev`. Per-service profile files (`<service
 
 ## Testing
 
-| Layer | Style | Coverage |
+| Layer | Style | Covers |
 |---|---|---|
 | Unit | Plain JUnit 5 + Mockito | Services, filters, utilities |
 | Controller slice | `@WebMvcTest` with `@MockBean` services | HTTP wiring, validation, error mapping |
@@ -378,15 +397,44 @@ Activate with `SPRING_PROFILES_ACTIVE=dev`. Per-service profile files (`<service
 cd auth-service && ./mvnw test
 ```
 
-See [TESTING.md](TESTING.md) for the test layout, the Docker Desktop on Windows workaround, and the singleton-container pattern that lets multiple test classes share one MySQL/Kafka container per JVM.
+### Coverage
+
+Generated by JaCoCo, regenerated automatically by CI on every push to `master`.
+
+<!-- coverage:start -->
+_Last regenerated by CI on 2026-05-03. See [`scripts/coverage-summary.sh`](scripts/coverage-summary.sh)._
+
+| Service | Line coverage | Branch coverage |
+|---|---|---|
+| `config-server` | — | — |
+| `auth-service` | **68%** (267/389) | **66%** (65/98) |
+| `catalog-service` | **68%** (547/798) | **65%** (111/170) |
+| `playlist-service` | **80%** (195/242) | **80%** (58/72) |
+| `streaming-service` | **83%** (146/174) | **71%** (40/56) |
+| `notification-service` | **94%** (35/37) | — |
+| **Aggregate** | **72%** (1190/1640) | **69%** (274/396) |
+<!-- coverage:end -->
+
+To regenerate locally after running the test suite:
+
+```bash
+./run-all-tests.sh
+./scripts/coverage-summary.sh
+```
+
+See [TESTING.md](TESTING.md) for the test layout, the Docker Desktop on Windows workaround, the singleton-container pattern, and what the suite explicitly does *not* cover.
 
 ---
 
 ## System Design Talking Points
 
 - **Gateway is the only public surface.** Backend services bind to internal ports and reject anything missing `X-Gateway-Secret`. Zero trust between gateway and the world; trusted-zone shortcuts inside.
+- **`X-Gateway-Secret` covers Feign too.** Service-to-service calls via Feign go through `lb://service`, hit the same `InternalTrafficFilter`, and need the same secret. A `RequestInterceptor` (in each Feign-using service's `FeignClientConfig`) stamps the header on every outbound Feign call. Without this, Feign calls 403 silently and Resilience4j fallbacks make the failure invisible.
+- **CORS is centralized at the gateway.** A reactive `CorsWebFilter` in `gateway-service.CorsConfig` is the only emitter of CORS headers. Backend services explicitly disable Spring Security CORS (`auth-service.SecurityConfig`) so responses don't carry duplicate headers when proxied.
 - **JWT validated once, identity propagated as a header.** Backend services don't re-validate the JWT or talk to auth-service per request — they trust `X-User-Id` because it can only have come through the gateway.
 - **Eureka resolves `lb://<service>`.** Gateway routes and Feign clients both use service names rather than hostnames, so scaling, failover, and local-vs-prod hostname swaps just work.
+- **Resilience4j circuit breakers wrap every Feign call.** Per-client fallback beans return safe defaults (empty list / null / empty `ApiResponseDTO`) so a downstream outage degrades the page instead of returning 500. Configured globally via `spring.cloud.openfeign.circuitbreaker.enabled=true` + `resilience4j.*` defaults in `centralconfigs/global/`.
+- **Hot config reload via `/actuator/refresh`.** Properties bound via `@ConfigurationProperties` (e.g., `GatewaySecretProperties` for `gateway.secret`) rebind in place when `POST /actuator/refresh` fires, so secret rotation doesn't require a restart. The filters that read these properties hold the same bean reference and call the getter per request — they see new values on the next request.
 - **Config-server serves placeholder text, not values.** Secrets live in env vars or local `env.properties`; the config-server only knows the *shape* of the config. Rotating a secret doesn't require touching the repo.
 - **`spring.config.import=optional:`** for both env file and config server. A service starts even if either is missing — tests in particular rely on this so they don't need the whole stack running.
 - **Each service owns its tables.** Cross-service reads via Feign (synchronous) or Kafka events (async). The two cross-service `JdbcTemplate` queries in catalog-service (`users`, `artist_following`) are explicit pragmatic shortcuts and are documented in catalog-service's README.

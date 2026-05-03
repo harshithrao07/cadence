@@ -13,6 +13,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ArtistServiceIT extends BaseIntegrationTest {
@@ -28,9 +30,18 @@ class ArtistServiceIT extends BaseIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        jdbcTemplate.update("DELETE FROM artist_following");
-        jdbcTemplate.update("DELETE FROM users");
-        artistRepository.deleteAll();
+        // TRUNCATE with FK checks off — repository.deleteAll() respects FK constraints
+        // and breaks if a prior IT (RecordServiceIT, GenericServiceIT) committed records
+        // referencing artists into artist_records.
+        jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 0");
+        for (String table : List.of(
+                "artist_following", "users",
+                "artist_created_songs", "artist_records", "song_genre",
+                "song", "record", "artist", "genre"
+        )) {
+            jdbcTemplate.execute("TRUNCATE TABLE " + table);
+        }
+        jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 1");
 
         Artist artist = artistRepository.save(
                 Artist.builder().name("Drake").description("Toronto").build()

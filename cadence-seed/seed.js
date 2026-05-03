@@ -150,6 +150,7 @@ async function truncateAll() {
   await db.query("TRUNCATE artist_following");
   await db.query("TRUNCATE artist_created_songs");
   await db.query("TRUNCATE artist_records");
+  await db.query("TRUNCATE email_verification_token");
   await db.query("TRUNCATE song");
   await db.query("TRUNCATE record");
   await db.query("TRUNCATE artist");
@@ -414,11 +415,11 @@ async function seedSongs(recordsWithMeta, artistIds, genreIds) {
 async function seedFollowers(userIds, artistIds) {
   for (const userId of userIds) {
     const followed = pick(artistIds, 1, 5);
-    for (const artistId of followed) {
+    for (let i = 0; i < followed.length; i++) {
       await db.query(
-        `INSERT IGNORE INTO artist_following (user_id, artist_id)
-         VALUES (?, ?)`,
-        [userId, artistId]
+        `INSERT IGNORE INTO artist_following (user_id, artist_id, follow_order)
+         VALUES (?, ?, ?)`,
+        [userId, followed[i], i]
       );
     }
   }

@@ -186,7 +186,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         try {
           if ((nextSong as any).file) continue;
 
-          const endpoint = `api/v1/song/stream/${nextSong.id}`;
+          const endpoint = `api/v1/stream/song/${nextSong.id}`;
           const controller = new AbortController();
 
           const response = await fetchStreamWithAuth(endpoint, controller.signal, { Range: `bytes=0-${PRELOAD_BYTES}` });
@@ -257,7 +257,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           url = window.URL.createObjectURL(blob);
         } else {
           // Stream using MediaSource and fetchWithAuth
-          const endpoint = `api/v1/song/stream/${song.id}`;
+          const endpoint = `api/v1/stream/song/${song.id}`;
 
           controller = new AbortController();
           requestControllerRef.current = controller;

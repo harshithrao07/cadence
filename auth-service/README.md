@@ -175,6 +175,13 @@ The `users` table also has a `@ManyToMany` to a local `Artist` entity via `artis
 
 Both producers swallow Kafka failures (logged but non-fatal) so a downstream Kafka outage doesn't block user signup.
 
+## Cross-Cutting Concerns
+
+- **CORS is disabled here** (`SecurityConfig` uses `.cors(AbstractHttpConfigurer::disable)`). All CORS handling is centralized in the gateway. Backend services aren't browser-facing, so CORS headers from here would just duplicate the gateway's and cause the browser to reject the response.
+- **Outbound Feign calls** (`PlaylistClient` for user-profile playlist sections) go through `FeignClientConfig.gatewaySecretInterceptor` which stamps `X-Gateway-Secret` on every request. Without it, the destination service's `InternalTrafficFilter` would 403 the call and Resilience4j's `PlaylistClientFallback` would silently return empty playlist data.
+- **Resilience4j circuit breaker** wraps `PlaylistClient`. If `playlist-service` is slow or down, `PlaylistClientFallback` returns an empty `ApiResponseDTO` so user profiles still render, just without playlist sections.
+- **`/actuator/refresh` rebinds `gateway.secret`** in place via `GatewaySecretProperties`. Rotating the secret is hot — no auth-service restart needed.
+
 ## Configuration
 
 Local `application.properties`:
