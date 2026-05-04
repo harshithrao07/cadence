@@ -20,6 +20,7 @@ The platform is built around the principle that **one service owns one bounded c
 - [Repository Layout](#repository-layout)
 - [Per-Environment Profiles](#per-environment-profiles)
 - [Testing](#testing)
+- [Performance](#performance)
 - [System Design Talking Points](#system-design-talking-points)
 - [Troubleshooting](#troubleshooting)
 
@@ -423,6 +424,83 @@ To regenerate locally after running the test suite:
 ```
 
 See [TESTING.md](TESTING.md) for the test layout, the Docker Desktop on Windows workaround, the singleton-container pattern, and what the suite explicitly does *not* cover.
+
+---
+
+## Performance
+
+Headline numbers measured locally against the dockerised stack. The stepped load test script lives at [`scripts/load-test-discover-stepped.js`](scripts/load-test-discover-stepped.js) and runs via the official `grafana/k6` image — no install needed.
+
+### Stepped load test — `/api/v1/discover`
+
+Five back-to-back constant-VU scenarios at 50 → 100 → 150 → 200 → 250 VUs, 30 s each. The endpoint is the heaviest read path in the system: it hydrates trending songs, popular artists, new releases, recommendations, suggested artists, and recent history — fanning out from catalog-service to streaming-service via three Feign calls per request.
+
+| VUs | reqs | req/s | p50 | p95 | p99 | success |
+|-----|------|-------|-----|-----|-----|---------|
+| 50  | 6,285 | 209.5 | 219 ms | 382 ms | 630 ms | **100.00%** |
+| 100 | 9,177 | **305.9** | 316 ms | **549 ms** | **672 ms** | **100.00%** |
+| 150 |   540 |  18.0 | 10,158 ms | 11,005 ms | 20,262 ms | 69.44% |
+| 200 |   574 |  19.1 | 10,217 ms | 20,210 ms | 20,344 ms | 51.74% |
+| 250 |   587 |  19.6 | 10,264 ms | 20,222 ms | 20,324 ms | 44.12% |
+
+**Sustained ceiling: ~306 req/s at 100 VUs with 0% errors and p99 under 700 ms.** Past that the system saturates and degrades into 10–20 s timeouts.
+
+### Bottleneck identification
+
+`docker stats` was sampled every 5 s during the run. Average CPU per stage (top contenders only):
+
+| service | 50 VUs | 100 VUs | 150 VUs | 200 VUs |
+|---|---|---|---|---|
+| catalog-service  | 346% | **369%** | 46% | 19% |
+| mysql            | 198% | **327%** | 26% | 11% |
+| streaming-service| 188% | **189%** | 19% |  3% |
+| gateway-service  |  40% |  45% |  5% |  3% |
+
+At 100 VUs the four containers together consume ≈ **9 CPU cores** on the Docker host. At 150 VUs CPU usage *drops* — Tomcat threads are blocked waiting on Hikari connections that are already serving the in-flight fan-out, so new work queues up and times out instead of executing. The single-host setup is the ceiling; horizontal scaling via Eureka (running a second `catalog-service` replica) would lift it.
+
+### Tuning win — Hikari connection pool
+
+The `/api/v1/discover` flow holds **one catalog-service connection for the entire request duration** *and* fans out to streaming-service which holds another. With the Spring Boot default `spring.datasource.hikari.maximum-pool-size=10`, the pool was the bottleneck long before CPU.
+
+| Hikari `max-pool-size` | result at 50 VUs |
+|---|---|
+| 10 (default) | **99.77% errors**, p99 ≈ 30 s (= default `connection-timeout`) |
+| 50 (tuned)   | **0 errors**, p99 = 630 ms |
+
+Set in [`config-server/centralconfigs/catalog-service/catalog-service.properties`](config-server/centralconfigs/catalog-service/catalog-service.properties) and the equivalent `streaming-service` properties:
+
+```properties
+spring.datasource.hikari.maximum-pool-size=50
+spring.datasource.hikari.minimum-idle=10
+spring.datasource.hikari.connection-timeout=10000
+```
+
+### N+1 elimination — query count is constant w.r.t. response size
+
+The discover feed hydrates ~75 entities (20 trending + 10 popular artists + 12 new releases + 12 from followed artists + 20 recommended + 10 suggested + ~15 recent). Measured with `spring.jpa.show-sql=true`:
+
+- **14 Hibernate queries total** for the whole feed
+- The `enrichSongs` block fires **exactly 3 queries** regardless of how many songs are passed in — one for the song base + record fields, one for artists across all songs, one for genres across all songs. All three use `WHERE s.id IN (?, ?, ...)` with DTO projection (no entity hydration, no lazy proxies). See [`GenericService.enrichSongs`](catalog-service/src/main/java/com/project/cadence/service/GenericService.java).
+
+A naive per-song-hydration approach would cost **1 + 2N queries per enrichment block** (≈41 queries for 20 songs), and the feed enriches three song lists — so the naive cost would be ~125 queries instead of 14. Doubling page sizes from 20 to 40 would not add a single query under the batched path; it only widens the `IN` list.
+
+### Reproducing locally
+
+```bash
+# 1. Bring the stack up
+docker compose up --build -d
+
+# 2. Seed the DB so /discover has data to return
+cd cadence-seed && npm install && node seed.js && cd ..
+
+# 3. Run the stepped load test (uses a seeded user)
+docker run --rm --network cadence_default \
+  -v "$(pwd)/scripts:/scripts" \
+  -e EMAIL=Adella56@yahoo.com -e PASSWORD=password \
+  -e BASE_URL=http://gateway-service:8080 \
+  grafana/k6 run /scripts/load-test-discover-stepped.js \
+  --summary-trend-stats="avg,med,p(95),p(99),max"
+```
 
 ---
 
