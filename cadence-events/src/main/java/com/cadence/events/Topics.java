@@ -10,7 +10,9 @@ package com.cadence.events;
 public final class Topics {
     public static final String USER_CREATED_TOPIC = "auth.user-created";
     public static final String EMAIL_VERIFICATION_TOPIC = "auth.email-verification";
+    public static final String USER_UPDATED_TOPIC = "auth.user-updated";
     public static final String RECORD_CREATED_TOPIC = "catalog.record-created";
+    public static final String MEDIA_UPDATED_TOPIC = "catalog.media-updated";
 
     /** Failed records end up on {@code <topic> + DLT_SUFFIX}. */
     public static final String DLT_SUFFIX = ".DLT";

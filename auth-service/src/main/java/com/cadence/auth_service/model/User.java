@@ -53,23 +53,6 @@ public class User implements UserDetails {
     @Column(name = "email_verified", nullable = false)
     private boolean emailVerified = false;
 
-    @Builder.Default
-    @ManyToMany
-    @JoinTable(
-            name = "artist_following",
-            joinColumns = @JoinColumn(name = "user_id", referencedColumnName = "id"),
-            inverseJoinColumns = @JoinColumn(name = "artist_id", referencedColumnName = "id"),
-            indexes = {
-                    @Index(name = "idx_artist_following_artist_id", columnList = "artist_id"),
-                    @Index(name = "idx_artist_following_user_id", columnList = "user_id")
-            },
-            uniqueConstraints = {
-                    @UniqueConstraint(columnNames = {"user_id", "artist_id"})
-            }
-    )
-    @OrderColumn(name = "follow_order")
-    private List<Artist> artistFollowing = new ArrayList<>();
-
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));

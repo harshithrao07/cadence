@@ -1,6 +1,9 @@
 package com.cadence.auth_service.service;
 
+import com.cadence.auth_service.client.CatalogClient;
 import com.cadence.auth_service.client.PlaylistClient;
+import com.cadence.auth_service.dto.artist.ArtistPreviewDTO;
+import com.cadence.auth_service.producers.UserUpdatedProducer;
 import com.cadence.auth_service.dto.ApiResponseDTO;
 import com.cadence.auth_service.dto.playlist.PlaylistPreviewDTO;
 import com.cadence.auth_service.dto.user.UserProfileChangeDTO;
@@ -33,6 +36,8 @@ class UserServiceTest {
 
     @Mock private UserRepository userRepository;
     @Mock private PlaylistClient playlistClient;
+    @Mock private CatalogClient catalogClient;
+    @Mock private UserUpdatedProducer userUpdatedProducer;
 
     @InjectMocks
     private UserService userService;
@@ -62,12 +67,15 @@ class UserServiceTest {
         when(userRepository.findById(USER_ID)).thenReturn(Optional.of(u));
         when(playlistClient.getCreatedPlaylists(USER_ID, true)).thenReturn(created);
         when(playlistClient.getLikedPlaylists(USER_ID)).thenReturn(liked);
+        List<ArtistPreviewDTO> followed = List.of(new ArtistPreviewDTO("a-1", "Drake", null));
+        when(catalogClient.getFollowedArtists(USER_ID)).thenReturn(followed);
 
         ResponseEntity<ApiResponseDTO<UserProfileDTO>> response =
                 userService.getUserProfile(USER_ID, USER_EMAIL);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         UserProfileDTO dto = response.getBody().data();
+        assertThat(dto.artistFollowing()).isEqualTo(followed);
         assertThat(dto.email()).isEqualTo(USER_EMAIL);
         assertThat(dto.isOwner()).isTrue();
         assertThat(dto.likedPlaylistsPreview()).isEqualTo(liked);
@@ -116,6 +124,7 @@ class UserServiceTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(u.getName()).isEqualTo("NewName");
         verify(userRepository).save(u);
+        verify(userUpdatedProducer).send(u);
     }
 
     @Test

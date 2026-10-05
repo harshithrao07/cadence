@@ -10,13 +10,11 @@ import com.project.cadence.dto.s3.FileUploadResult;
 import com.project.cadence.dto.s3.MetadataDTO;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.Part;
-import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -32,7 +30,7 @@ import java.util.concurrent.CompletableFuture;
 public class AwsService {
 
     private final AmazonS3 amazonS3;
-    private final JdbcTemplate jdbcTemplate;
+    private final MediaTargetWriter mediaTargetWriter;
     private final UploadAuthorizer uploadAuthorizer;
 
     @Value("${cloud.aws.s3.bucket}")
@@ -61,33 +59,33 @@ public class AwsService {
             log.warn("User {} denied presigned {} for {} {}", userId, metadata.httpMethod(), target.get(), metadata.primaryKey());
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        return ResponseEntity.ok(presign(target.get(), metadata.primaryKey(), metadata.httpMethod()));
+        return ResponseEntity.ok(presign(target.get(), metadata.primaryKey(), metadata.httpMethod(), userId, isAdmin));
     }
 
     /**
-     * For trusted callers inside catalog-service (no authorization). The target must still be allow-listed.
+     * For trusted callers inside catalog-service (no authorization; acts as an admin). The target must still be
+     * allow-listed.
      */
     public String getPresignedUrl(String category, String subCategory, String primaryKey, HttpMethod httpMethod) {
         UploadTarget target = UploadTarget.of(category, subCategory)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown upload target: " + category + " " + subCategory));
-        return presign(target, primaryKey, httpMethod);
+        return presign(target, primaryKey, httpMethod, null, true);
     }
 
-    private String presign(UploadTarget target, String primaryKey, HttpMethod httpMethod) {
+    private String presign(UploadTarget target, String primaryKey, HttpMethod httpMethod, String userId, boolean isAdmin) {
         String fileName = target.objectKey(primaryKey);
         log.info("Generated file name '{}' for saving in bucket '{}'", fileName, s3BucketName);
 
         if (httpMethod.equals(HttpMethod.DELETE)) {
-            handleDeleteDbUpdate(target, primaryKey);
+            handleDeleteDbUpdate(target, primaryKey, userId, isAdmin);
         }
 
         return generateUrl(fileName, httpMethod);
     }
 
-    @Transactional
-    public void handleDeleteDbUpdate(UploadTarget target, String primaryKey) {
+    public void handleDeleteDbUpdate(UploadTarget target, String primaryKey, String userId, boolean isAdmin) {
         try {
-            jdbcTemplate.update(target.updateSql(), null, primaryKey);
+            mediaTargetWriter.write(target, primaryKey, null, userId, isAdmin);
         } catch (Exception e) {
             log.error("DB update failed for delete. target={}, id={}", target, primaryKey, e);
         }
@@ -137,8 +135,8 @@ public class AwsService {
 
             for (FileUploadResult result : uploadResults) {
                 UploadTarget target = UploadTarget.of(result.tableName(), result.columnName()).orElseThrow();
-                jdbcTemplate.update(target.updateSql(), result.url(), result.primaryKey());
-                log.info("Updated {} for pk '{}' with URL '{}'", target, result.primaryKey(), result.url());
+                mediaTargetWriter.write(target, result.primaryKey(), result.url(), userId, isAdmin);
+                log.info("Recorded {} for pk '{}' with URL '{}'", target, result.primaryKey(), result.url());
             }
 
             return new ResponseEntity<>(uploadResults, HttpStatus.OK);

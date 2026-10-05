@@ -1,6 +1,6 @@
 # Database-per-service + Choreography SAGA — Plan
 
-Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–1 done.
+Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–2 done.
 
 ## Why
 
@@ -68,6 +68,8 @@ Every event is wrapped in an envelope: `eventId` (UUID), `sagaId`, `type`, `vers
 | `catalog.record-deleted` / `catalog.artist-deleted` | catalog | playlist, streaming | Saga B (carries `songIds`) |
 | `catalog.songs-purged` | playlist, streaming | catalog | Saga B confirmations |
 | `auth.user-created` | auth | playlist | Existing flow on the outbox; replaced by `user.registered` in Phase 3 |
+| `auth.user-updated` | auth | catalog | Phase 2: user snapshot → `user_replica` (published on creation until Phase 3 moves it to activation) |
+| `catalog.media-updated` | catalog | auth, playlist | Phase 2: avatar / playlist cover stored or removed |
 | `auth.email-verification` | auth | notification | Existing flow, moved onto the outbox |
 | `catalog.record-created` | catalog | notification | Existing flow, moved onto the outbox |
 
@@ -154,11 +156,21 @@ Decisions made while implementing:
 
 ### Phase 2 — follows move to catalog (shared DB still)
 
-- [ ] `UserReplica` entity + consumer for `user.activated` / `user.updated`
-- [ ] Remove every `users` read from catalog (`ArtistService.userExists`, `getArtistFollowers`, `GenericService.userExists`, `RecordService.getFollowerEmails`)
-- [ ] Catalog `GET /internal/users/{id}/followed-artists`
-- [ ] auth: remove `Artist` entity and `User.artistFollowing` mapping; profile uses a Feign `CatalogClient` (fallback: empty list)
-- [ ] auth: publish `user.updated` on profile update
+- [x] `UserReplica` entity + `UserUpdatedConsumer` on `auth.user-updated` (upsert; older snapshots ignored via `source_updated_at`)
+- [x] No `users` reads left in catalog (`ArtistService.userExists`, `getArtistFollowers`, `GenericService.userExists`, `RecordService.getFollowerEmails` use `user_replica`)
+- [x] `artist_following` mapped as catalog's `ArtistFollow` entity; catalog `GET /internal/users/{id}/followed-artists`
+- [x] auth: `Artist` entity and `User.artistFollowing` removed; profile uses Feign `CatalogClient` (fallback: empty list)
+- [x] auth publishes `auth.user-updated` on registration (password + OAuth), name change and avatar change; `POST /internal/users/republish` backfills the replica
+
+Found while implementing: catalog's **file uploads also wrote other services' tables** (`users.profile_url`,
+`playlist.cover_url`), via SQL built from the client's file name. That code also allowed SQL injection and
+unauthorized writes; fixed first in its own commit (`UploadTarget` allow-list + `UploadAuthorizer`). Then:
+
+- [x] Decision: **event to the owner.** catalog stores the file in S3 and publishes `catalog.media-updated`
+  (`MediaUpdatedEvent{target, targetId, url, requestedBy, requestedByAdmin}`); auth applies avatars, playlist applies
+  covers, each re-checking ownership
+- [x] catalog authorizes **before** storing the file, so an unauthorized upload can't overwrite someone's image in S3:
+  playlist ownership via Feign `GET /internal/playlists/{id}/owner` (denied if playlist-service is down)
 
 ### Phase 3 — Saga A (registration)
 

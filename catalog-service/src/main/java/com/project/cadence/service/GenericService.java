@@ -234,7 +234,7 @@ public class GenericService {
 
     private boolean userExists(String userId) {
         Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM users WHERE id = ?",
+                "SELECT COUNT(*) FROM user_replica WHERE id = ?",
                 Integer.class,
                 userId
         );

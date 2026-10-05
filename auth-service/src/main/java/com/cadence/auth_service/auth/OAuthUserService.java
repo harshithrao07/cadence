@@ -5,6 +5,7 @@ import com.cadence.auth_service.model.OAuth2Provider;
 import com.cadence.auth_service.model.Role;
 import com.cadence.auth_service.model.User;
 import com.cadence.auth_service.producers.UserCreatedProducer;
+import com.cadence.auth_service.producers.UserUpdatedProducer;
 import com.cadence.auth_service.repository.UserRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Service;
 public class OAuthUserService {
     private final UserRepository userRepository;
     private final UserCreatedProducer producer;
+    private final UserUpdatedProducer userUpdatedProducer;
 
     @Transactional
     public User findOrCreateUser(String email, String name, String picture) {
@@ -32,6 +34,7 @@ public class OAuthUserService {
                     producer.send(
                             new UserCreatedEvent(saved.getId())
                     );
+                    userUpdatedProducer.send(saved);
 
                     return saved;
                 });

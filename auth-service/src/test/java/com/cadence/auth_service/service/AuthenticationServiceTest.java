@@ -8,6 +8,7 @@ import com.cadence.events.UserCreatedEvent;
 import com.cadence.auth_service.model.Role;
 import com.cadence.auth_service.model.User;
 import com.cadence.auth_service.producers.UserCreatedProducer;
+import com.cadence.auth_service.producers.UserUpdatedProducer;
 import com.cadence.auth_service.repository.UserRepository;
 import com.cadence.auth_service.utils.JwtUtil;
 import org.junit.jupiter.api.Test;
@@ -35,6 +36,7 @@ class AuthenticationServiceTest {
     @Mock private UserRepository userRepository;
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private UserCreatedProducer producer;
+    @Mock private UserUpdatedProducer userUpdatedProducer;
     @Mock private JwtUtil jwtUtil;
 
     @InjectMocks
@@ -71,6 +73,7 @@ class AuthenticationServiceTest {
         assertThat(response.getBody().data().refreshToken()).isEqualTo("refresh-token");
         assertThat(response.getBody().data().id()).isEqualTo("user-1");
         verify(producer).send(any(UserCreatedEvent.class));
+        verify(userUpdatedProducer).send(any(User.class));
     }
 
     @Test

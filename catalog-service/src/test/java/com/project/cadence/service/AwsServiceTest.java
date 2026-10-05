@@ -19,7 +19,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.ByteArrayInputStream;
@@ -46,7 +45,7 @@ class AwsServiceTest {
     private static final String BUCKET = "test-bucket";
 
     @Mock AmazonS3 amazonS3;
-    @Mock JdbcTemplate jdbcTemplate;
+    @Mock MediaTargetWriter mediaTargetWriter;
     @Mock UploadAuthorizer uploadAuthorizer;
 
     @InjectMocks AwsService awsService;
@@ -87,7 +86,7 @@ class AwsServiceTest {
         String result = awsService.getPresignedUrl("song", "song_url", "abc-123", HttpMethod.PUT);
 
         assertThat(result).isEqualTo(stubUrl.toString());
-        verify(jdbcTemplate, never()).update(anyString(), any(Object[].class));
+        verifyNoInteractions(mediaTargetWriter);
     }
 
     @Test
@@ -98,15 +97,16 @@ class AwsServiceTest {
 
         awsService.getPresignedUrl("artist", "profile_url", "a-1", HttpMethod.DELETE);
 
-        verify(jdbcTemplate).update("UPDATE artist SET profile_url = ? WHERE id = ?", null, "a-1");
+        // Internal (trusted) callers act as an admin.
+        verify(mediaTargetWriter).write(UploadTarget.ARTIST_PICTURE, "a-1", null, null, true);
     }
 
     @Test
     void handleDeleteDbUpdate_swallowsExceptions_doesNotThrow() {
-        when(jdbcTemplate.update(anyString(), any(Object.class)))
-                .thenThrow(new RuntimeException("db down"));
+        org.mockito.Mockito.doThrow(new RuntimeException("db down"))
+                .when(mediaTargetWriter).write(UploadTarget.ARTIST_PICTURE, "a-1", null, "u-1", true);
 
-        awsService.handleDeleteDbUpdate(UploadTarget.ARTIST_PICTURE, "a-1");
+        awsService.handleDeleteDbUpdate(UploadTarget.ARTIST_PICTURE, "a-1", "u-1", true);
     }
 
     @Test
@@ -181,7 +181,7 @@ class AwsServiceTest {
     void getPresignedUrl_rejectsTargetsOutsideAllowList() {
         assertThatThrownBy(() -> awsService.getPresignedUrl("users", "password_hash", "u-1", HttpMethod.DELETE))
                 .isInstanceOf(IllegalArgumentException.class);
-        verifyNoInteractions(jdbcTemplate);
+        verifyNoInteractions(mediaTargetWriter);
     }
 
     // ── getPresignedUrlForClient (authorization) ──────────────────────────
@@ -193,7 +193,7 @@ class AwsServiceTest {
         ResponseEntity<String> result = awsService.getPresignedUrlForClient(metadata, "u-1", false);
 
         assertThat(result.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        verifyNoInteractions(jdbcTemplate, amazonS3);
+        verifyNoInteractions(mediaTargetWriter, amazonS3);
     }
 
     @Test
@@ -202,7 +202,7 @@ class AwsServiceTest {
 
         assertThat(awsService.getPresignedUrlForClient(metadata, "u-1", false).getStatusCode())
                 .isEqualTo(HttpStatus.BAD_REQUEST);
-        verifyNoInteractions(jdbcTemplate, amazonS3);
+        verifyNoInteractions(mediaTargetWriter, amazonS3);
     }
 
     @Test
@@ -212,7 +212,7 @@ class AwsServiceTest {
 
         assertThat(awsService.getPresignedUrlForClient(metadata, "u-1", false).getStatusCode())
                 .isEqualTo(HttpStatus.FORBIDDEN);
-        verifyNoInteractions(jdbcTemplate, amazonS3);
+        verifyNoInteractions(mediaTargetWriter, amazonS3);
     }
 
     @Test
@@ -226,7 +226,7 @@ class AwsServiceTest {
 
         assertThat(result.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(result.getBody()).isEqualTo("https://signed.test/users/profile_url/u-1");
-        verify(jdbcTemplate).update("UPDATE users SET profile_url = ? WHERE id = ?", null, "u-1");
+        verify(mediaTargetWriter).write(UploadTarget.USER_AVATAR, "u-1", null, "u-1", false);
     }
 
     // ── uploadFileAsync ───────────────────────────────────────────────────
@@ -299,11 +299,8 @@ class AwsServiceTest {
 
         assertThat(result.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(result.getBody()).hasSize(1);
-        verify(jdbcTemplate).update(
-                "UPDATE record SET cover_url = ? WHERE id = ?",
-                "https://test-bucket.s3.amazonaws.com/record/cover_url/r-1",
-                "r-1"
-        );
+        verify(mediaTargetWriter).write(UploadTarget.RECORD_COVER, "r-1",
+                "https://test-bucket.s3.amazonaws.com/record/cover_url/r-1", "admin-1", true);
     }
 
     @Test
@@ -316,7 +313,7 @@ class AwsServiceTest {
             assertThat(awsService.save("u-1", false, List.of(part)).getStatusCode())
                     .as(name).isEqualTo(HttpStatus.BAD_REQUEST);
         }
-        verifyNoInteractions(jdbcTemplate, amazonS3);
+        verifyNoInteractions(mediaTargetWriter, amazonS3);
     }
 
     @Test
@@ -330,7 +327,7 @@ class AwsServiceTest {
 
         assertThat(awsService.save("u-1", false, List.of(own, someoneElses)).getStatusCode())
                 .isEqualTo(HttpStatus.FORBIDDEN);
-        verifyNoInteractions(jdbcTemplate, amazonS3);
+        verifyNoInteractions(mediaTargetWriter, amazonS3);
     }
 
     @Test

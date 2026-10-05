@@ -164,7 +164,11 @@ erDiagram
     }
 ```
 
-The `users` table also has a `@ManyToMany` to a local `Artist` entity via `artist_following` (which catalog-service also reads from via raw `JdbcTemplate` — see catalog-service's README for that boundary).
+Artist follows are owned by catalog-service; the profile endpoint fetches them with `CatalogClient`
+(`GET /internal/users/{userId}/followed-artists`, empty list if catalog is down). Every change to a user's public
+profile (registration, name change, avatar change) publishes `auth.user-updated`, which keeps catalog's
+`user_replica` in sync; `POST /internal/users/republish` re-sends every user. Avatar uploads are stored by
+catalog-service and applied here from `catalog.media-updated` (own avatar only, unless admin).
 
 ## Eventing
 

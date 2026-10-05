@@ -52,7 +52,7 @@ class ArtistServiceTest {
 
     private void stubUserExists(int count) {
         when(jdbcTemplate.queryForObject(
-                contains("FROM users"),
+                contains("FROM user_replica"),
                 eq(Integer.class),
                 any(Object[].class)
         )).thenReturn(count);

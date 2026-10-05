@@ -5,6 +5,7 @@ import com.cadence.auth_service.dto.auth.*;
 import com.cadence.events.UserCreatedEvent;
 import com.cadence.auth_service.model.*;
 import com.cadence.auth_service.producers.UserCreatedProducer;
+import com.cadence.auth_service.producers.UserUpdatedProducer;
 import com.cadence.auth_service.repository.UserRepository;
 import com.cadence.auth_service.utils.JwtUtil;
 import jakarta.transaction.Transactional;
@@ -26,6 +27,7 @@ public class AuthenticationService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final UserCreatedProducer producer;
+    private final UserUpdatedProducer userUpdatedProducer;
     private final JwtUtil jwtUtil;
 
     @Transactional
@@ -53,6 +55,7 @@ public class AuthenticationService {
 
             User savedUser = userRepository.save(user);
             producer.send(new UserCreatedEvent(savedUser.getId()));
+            userUpdatedProducer.send(savedUser);
 
             if (savedUser.getId() == null) {
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(new ApiResponseDTO<>(false, "An error occurred while creating the user", null));

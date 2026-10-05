@@ -35,7 +35,7 @@ class ArtistServiceIT extends BaseIntegrationTest {
         // referencing artists into artist_records.
         jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 0");
         for (String table : List.of(
-                "artist_following", "users",
+                "artist_following", "user_replica",
                 "artist_created_songs", "artist_records", "song_genre",
                 "song", "record", "artist", "genre"
         )) {
@@ -49,7 +49,7 @@ class ArtistServiceIT extends BaseIntegrationTest {
         artistId = artist.getId();
 
         jdbcTemplate.update(
-                "INSERT INTO users (id, name, profile_url) VALUES (?, ?, ?)",
+                "INSERT INTO user_replica (id, name, profile_url, source_updated_at) VALUES (?, ?, ?, NOW(6))",
                 USER_ID, "Alice", null
         );
     }
@@ -123,6 +123,18 @@ class ArtistServiceIT extends BaseIntegrationTest {
                 Integer.class, USER_ID
         );
         assertThat(distinctOrders).isEqualTo(3);
+    }
+
+    @Test
+    void getFollowedArtists_returnsArtistsInFollowOrder() {
+        Artist second = artistRepository.save(Artist.builder().name("Kendrick").build());
+        artistService.followArtist(second.getId(), USER_ID);
+        artistService.followArtist(artistId, USER_ID);
+
+        assertThat(artistService.getFollowedArtists(USER_ID))
+                .extracting(a -> a.id())
+                .containsExactly(second.getId(), artistId);
+        assertThat(artistService.getFollowedArtists("nobody")).isEmpty();
     }
 
     @Test

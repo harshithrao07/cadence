@@ -1,6 +1,9 @@
 package com.cadence.auth_service.service;
 
 import com.cadence.auth_service.client.PlaylistClient;
+import org.springframework.transaction.annotation.Transactional;
+import com.cadence.auth_service.producers.UserUpdatedProducer;
+import com.cadence.auth_service.client.CatalogClient;
 import com.cadence.auth_service.dto.ApiResponseDTO;
 import com.cadence.auth_service.dto.artist.ArtistPreviewDTO;
 import com.cadence.auth_service.dto.playlist.PlaylistPreviewDTO;
@@ -26,6 +29,8 @@ import java.util.*;
 public class UserService implements UserDetailsService {
     private final UserRepository userRepository;
     private final PlaylistClient playlistClient;
+    private final CatalogClient catalogClient;
+    private final UserUpdatedProducer userUpdatedProducer;
 
     private boolean authenticatedUserMatchesProfileLookup(String tokenEmail, String userId) {
         Optional<User> user = userRepository.findById(userId);
@@ -55,16 +60,7 @@ public class UserService implements UserDetailsService {
                     ? playlistClient.getLikedPlaylists(userId)
                     : List.of();
 
-            List<ArtistPreviewDTO> artistFollowingPreview = new ArrayList<>();
-            user.getArtistFollowing().forEach(artist ->
-                    artistFollowingPreview.add(
-                            new ArtistPreviewDTO(
-                                    artist.getId(),
-                                    artist.getName(),
-                                    artist.getProfileUrl()
-                            )
-                    )
-            );
+            List<ArtistPreviewDTO> artistFollowingPreview = catalogClient.getFollowedArtists(userId);
 
             UserProfileDTO userProfileDTO = new UserProfileDTO(
                     user.getId(),
@@ -98,6 +94,7 @@ public class UserService implements UserDetailsService {
     }
 
 
+    @Transactional
     public ResponseEntity<ApiResponseDTO<Void>> putUserProfile(String userId, UserProfileChangeDTO userProfileChangeDTO, String tokenEmail) {
         try {
             // Whether the token email matches with the requested profile's email if not then unauthorized
@@ -115,6 +112,7 @@ public class UserService implements UserDetailsService {
             }
 
             userRepository.save(user);
+            userUpdatedProducer.send(user);
             return ResponseEntity.status(HttpStatus.OK).body(new ApiResponseDTO<>(true, "User profile updated successfully", null));
         } catch (Exception e) {
             log.error("An exception has occurred {}", e.getMessage(), e);

@@ -316,7 +316,7 @@ public class RecordService {
                 """
                         SELECT DISTINCT u.email
                         FROM artist_following af
-                        JOIN users u ON u.id = af.user_id
+                        JOIN user_replica u ON u.id = af.user_id
                         WHERE af.artist_id IN (:artistIds)
                         """,
                 new MapSqlParameterSource("artistIds", artistIds),

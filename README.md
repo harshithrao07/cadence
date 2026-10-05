@@ -205,7 +205,7 @@ Two filters bracket every request:
 | [config-server](config-server/) | 8888 | Yes (config API) | — | — | Centralized configuration; serves files from `centralconfigs/`. |
 | [gateway-service](gateway-service/) | 8080 | Yes | — | — | Public entry; routes by path prefix; validates JWT; injects auth headers. |
 | [auth-service](auth-service/) | 8085 | Yes | `users`, `email_verification_token` | Producer | Registration, login, JWT issuance, OAuth2 (Google), email verification flow. |
-| [catalog-service](catalog-service/) | 8084 | Yes | `artist`, `record`, `song`, `genre`, `artist_following` | Producer | Artists/records/songs/genres CRUD, S3 uploads, follow/unfollow. |
+| [catalog-service](catalog-service/) | 8084 | Yes | `artist`, `record`, `song`, `genre`, `artist_following`, `user_replica` | Producer + consumer | Artists/records/songs/genres CRUD, S3 uploads, follow/unfollow. |
 | [playlist-service](playlist-service/) | 8082 | Yes | `playlist`, `liked_playlists`, `playlist_songs` | Consumer | User playlists + system Liked-Songs playlist. |
 | [streaming-service](streaming-service/) | 8083 | Yes | `play_history` | — | Play-history aggregation, trending songs, listener counts. |
 | [notification-service](notification-service/) | 8081 | No (consumer-only) | — | Consumer | SMTP email sender driven by Kafka events. |
@@ -279,6 +279,8 @@ Topics are auto-created by the producer on first send (`spring.kafka.admin.auto-
 | `auth.user-created` | `auth-service.UserCreatedProducer` | `playlist-service.UserCreatedConsumer` | New user registered → playlist-service creates a Liked-Songs system playlist for them. |
 | `auth.email-verification` | `auth-service.EmailVerificationProducer` | `notification-service.EmailVerificationConsumer` | Sign-up triggers a verification email send. |
 | `catalog.record-created` | `catalog-service.RecordCreatedProducer` | `notification-service.RecordCreatedConsumer` | New record uploaded → notification-service emails followers of all participating artists. |
+| `auth.user-updated` | `auth-service.UserUpdatedProducer` | `catalog-service.UserUpdatedConsumer` | User created or profile changed → catalog upserts its `user_replica`. |
+| `catalog.media-updated` | `catalog-service.MediaTargetWriter` | `auth-service.MediaUpdatedConsumer`, `playlist-service.MediaUpdatedConsumer` | Avatar / playlist cover stored or removed → the owning service updates its row after re-checking ownership. |
 
 Event classes and topic names live in [cadence-events](cadence-events/); topics are named `<producing-service>.<event>`.
 Delivery is handled by the shared [cadence-messaging](cadence-messaging/) auto-configuration:
@@ -344,7 +346,7 @@ Endpoint-level detail lives in each service's README.
 
 ## Persistence Model
 
-Each service owns its tables. A few cross-service reads happen by table name (notably catalog-service reading `users` and `artist_following`); see each service README for ownership boundaries.
+Each service owns its tables and reads no other service's tables: data owned elsewhere comes from Feign calls or from event-fed replicas (catalog's `user_replica`). See each service README for ownership boundaries.
 
 ![Cadence ER Diagram](assets/cadenceDB.png)
 
@@ -528,7 +530,7 @@ docker run --rm --network cadence_default \
 - **Hot config reload via `/actuator/refresh`.** Properties bound via `@ConfigurationProperties` (e.g., `GatewaySecretProperties` for `gateway.secret`) rebind in place when `POST /actuator/refresh` fires, so secret rotation doesn't require a restart. The filters that read these properties hold the same bean reference and call the getter per request — they see new values on the next request.
 - **Config-server serves placeholder text, not values.** Secrets live in env vars or local `env.properties`; the config-server only knows the *shape* of the config. Rotating a secret doesn't require touching the repo.
 - **`spring.config.import=optional:`** for both env file and config server. A service starts even if either is missing — tests in particular rely on this so they don't need the whole stack running.
-- **Each service owns its tables.** Cross-service reads via Feign (synchronous) or Kafka events (async). The two cross-service `JdbcTemplate` queries in catalog-service (`users`, `artist_following`) are explicit pragmatic shortcuts and are documented in catalog-service's README.
+- **Each service owns its tables.** Cross-service reads via Feign (synchronous) or event-fed replicas (async); no service queries another's tables. See [docs/db-per-service-saga-plan.md](docs/db-per-service-saga-plan.md).
 - **Kafka is the async fan-out.** Producers and consumers don't share a request lifecycle; a registration completing successfully doesn't block on the email actually being sent. Consumer crashes/lag don't break user-facing flows.
 - **Topics auto-created by producers.** `spring.kafka.admin.auto-create=true` plus `NewTopic` beans give a deterministic schema (3 partitions, 1 replica) without provisioning scripts.
 - **Containers reused across test classes.** `BaseIntegrationTest` starts MySQL/Kafka in a `static {}` block instead of `@Container`, so multiple ITs in one JVM share one container — saves ~10s startup per test class.

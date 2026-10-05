@@ -6,9 +6,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.jdbc.core.JdbcTemplate;
-
-import java.util.List;
+import com.project.cadence.client.PlaylistClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -17,7 +15,7 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class UploadAuthorizerTest {
 
-    @Mock JdbcTemplate jdbcTemplate;
+    @Mock PlaylistClient playlistClient;
     @InjectMocks UploadAuthorizer authorizer;
 
     @Test
@@ -25,7 +23,7 @@ class UploadAuthorizerTest {
         for (UploadTarget target : UploadTarget.values()) {
             assertThat(authorizer.mayModify(target, "x-1", "admin-1", true)).as(target.name()).isTrue();
         }
-        verifyNoInteractions(jdbcTemplate);
+        verifyNoInteractions(playlistClient);
     }
 
     @Test
@@ -43,12 +41,10 @@ class UploadAuthorizerTest {
 
     @Test
     void user_mayModifyOnlyCoversOfOwnPlaylists() {
-        when(jdbcTemplate.queryForList("SELECT user_id FROM playlist WHERE id = ?", String.class, "p-mine"))
-                .thenReturn(List.of("u-1"));
-        when(jdbcTemplate.queryForList("SELECT user_id FROM playlist WHERE id = ?", String.class, "p-theirs"))
-                .thenReturn(List.of("u-2"));
-        when(jdbcTemplate.queryForList("SELECT user_id FROM playlist WHERE id = ?", String.class, "p-missing"))
-                .thenReturn(List.of());
+        when(playlistClient.getPlaylistOwner("p-mine")).thenReturn("u-1");
+        when(playlistClient.getPlaylistOwner("p-theirs")).thenReturn("u-2");
+        // Missing playlist, or playlist-service down (the Feign fallback returns null): deny.
+        when(playlistClient.getPlaylistOwner("p-missing")).thenReturn(null);
 
         assertThat(authorizer.mayModify(UploadTarget.PLAYLIST_COVER, "p-mine", "u-1", false)).isTrue();
         assertThat(authorizer.mayModify(UploadTarget.PLAYLIST_COVER, "p-theirs", "u-1", false)).isFalse();

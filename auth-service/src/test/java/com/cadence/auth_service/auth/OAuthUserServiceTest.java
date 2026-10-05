@@ -5,6 +5,7 @@ import com.cadence.auth_service.model.OAuth2Provider;
 import com.cadence.auth_service.model.Role;
 import com.cadence.auth_service.model.User;
 import com.cadence.auth_service.producers.UserCreatedProducer;
+import com.cadence.auth_service.producers.UserUpdatedProducer;
 import com.cadence.auth_service.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -26,6 +27,7 @@ class OAuthUserServiceTest {
 
     @Mock UserRepository userRepository;
     @Mock UserCreatedProducer producer;
+    @Mock UserUpdatedProducer userUpdatedProducer;
 
     @InjectMocks OAuthUserService oAuthUserService;
 
@@ -69,6 +71,7 @@ class OAuthUserServiceTest {
         ArgumentCaptor<UserCreatedEvent> eventCaptor = ArgumentCaptor.forClass(UserCreatedEvent.class);
         verify(producer).send(eventCaptor.capture());
         assertThat(eventCaptor.getValue().userId()).isEqualTo("user-new");
+        verify(userUpdatedProducer).send(saved);
 
         assertThat(result.getId()).isEqualTo("user-new");
     }

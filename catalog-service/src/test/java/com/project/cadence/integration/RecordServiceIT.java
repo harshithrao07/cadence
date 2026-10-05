@@ -56,7 +56,7 @@ class RecordServiceIT extends BaseIntegrationTest {
         // orphaned join-table rows that cause unique-constraint violations on re-insert.
         jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 0");
         for (String table : List.of(
-                "artist_following", "users",
+                "artist_following", "user_replica",
                 "artist_created_songs", "artist_records", "song_genre",
                 "song", "record", "artist", "genre"
         )) {
