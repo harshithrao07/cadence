@@ -77,7 +77,8 @@ services:
 
   auth-service:
     build:
-      context: ./auth-service
+      context: .
+      dockerfile: auth-service/Dockerfile
     container_name: cadence-auth
     env_file:
       - env.properties
@@ -99,7 +100,8 @@ services:
 
   catalog-service:
     build:
-      context: ./catalog-service
+      context: .
+      dockerfile: catalog-service/Dockerfile
     container_name: cadence-catalog
     env_file:
       - env.properties
@@ -121,7 +123,8 @@ services:
 
   playlist-service:
     build:
-      context: ./playlist-service
+      context: .
+      dockerfile: playlist-service/Dockerfile
     container_name: cadence-playlist
     env_file:
       - env.properties
@@ -162,7 +165,8 @@ services:
 
   notification-service:
     build:
-      context: ./notification-service
+      context: .
+      dockerfile: notification-service/Dockerfile
     container_name: cadence-notification
     env_file:
       - env.properties

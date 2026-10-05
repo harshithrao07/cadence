@@ -64,6 +64,7 @@ For active development on a single service (faster reload, easier debugging), yo
 
 ```bash
 docker compose stop auth-service
+./mvnw -pl cadence-events install             # once, and again after changing event contracts
 (cd auth-service && ./mvnw spring-boot:run)   # uses env.properties for secrets
 ```
 
@@ -357,7 +358,9 @@ cadence/
 ├── playlist-service/
 ├── streaming-service/
 ├── notification-service/
+├── cadence-events/             # shared Kafka event records + topic names
 ├── cadence-frontend/           # React/Vite client (separate workspace)
+├── pom.xml                     # build aggregator (not a parent) — builds cadence-events before the services
 ├── compose.yaml                # local Kafka + MySQL via Docker Compose
 ├── env.properties              # local secrets — gitignored
 ├── run-all-tests.sh            # runs unit + IT across every service
@@ -394,8 +397,8 @@ Activate with `SPRING_PROFILES_ACTIVE=dev`. Per-service profile files (`<service
 # Run everything across all services
 ./run-all-tests.sh
 
-# Or per service
-cd auth-service && ./mvnw test
+# Or per service (from the repo root; -am builds cadence-events first)
+./mvnw -pl auth-service -am test
 ```
 
 ### Coverage

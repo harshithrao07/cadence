@@ -4,7 +4,7 @@ import com.cadence.auth_service.dto.ApiResponseDTO;
 import com.cadence.auth_service.dto.auth.AuthenticateRequestDTO;
 import com.cadence.auth_service.dto.auth.AuthenticationResponseDTO;
 import com.cadence.auth_service.dto.auth.RegisterRequestDTO;
-import com.cadence.auth_service.events.UserCreatedEvent;
+import com.cadence.events.UserCreatedEvent;
 import com.cadence.auth_service.model.Role;
 import com.cadence.auth_service.model.User;
 import com.cadence.auth_service.producers.UserCreatedProducer;

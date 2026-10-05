@@ -8,7 +8,7 @@ import com.project.cadence.dto.record.RecordPreviewDTO;
 import com.project.cadence.dto.record.UpsertRecordResponseDTO;
 import com.project.cadence.dto.song.SongResponseDTO;
 import com.project.cadence.dto.song.UpsertSongDTO;
-import com.project.cadence.events.RecordCreatedEvent;
+import com.cadence.events.RecordCreatedEvent;
 import com.project.cadence.model.*;
 import com.project.cadence.model.Record;
 import com.project.cadence.producers.RecordCreatedProducer;

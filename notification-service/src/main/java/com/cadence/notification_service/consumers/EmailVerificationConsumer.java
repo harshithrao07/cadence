@@ -1,7 +1,7 @@
 package com.cadence.notification_service.consumers;
 
-import com.cadence.notification_service.dto.Topics;
-import com.cadence.notification_service.events.EmailVerificationEvent;
+import com.cadence.events.Topics;
+import com.cadence.events.EmailVerificationEvent;
 import com.cadence.notification_service.services.WorkerService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;

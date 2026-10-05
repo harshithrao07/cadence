@@ -1,7 +1,7 @@
 package com.cadence.auth_service.service;
 
 import com.cadence.auth_service.dto.ApiResponseDTO;
-import com.cadence.auth_service.events.EmailVerificationEvent;
+import com.cadence.events.EmailVerificationEvent;
 import com.cadence.auth_service.model.EmailVerificationToken;
 import com.cadence.auth_service.model.User;
 import com.cadence.auth_service.producers.EmailVerificationProducer;
@@ -129,8 +129,8 @@ class EmailVerificationServiceTest {
         assertThat(response.getBody().success()).isTrue();
         verify(tokenRepository).save(any(EmailVerificationToken.class));
         verify(emailVerificationProducer).send(argThat(event ->
-                event.getEmail().equals("alice@example.com") &&
-                event.getVerificationLink().contains("http://localhost:8080/")
+                event.email().equals("alice@example.com") &&
+                event.verificationLink().contains("http://localhost:8080/")
         ));
     }
 

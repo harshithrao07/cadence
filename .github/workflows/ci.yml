@@ -35,12 +35,11 @@ jobs:
           cache: maven
 
       - name: Make mvnw executable
-        working-directory: ${{ matrix.service }}
         run: chmod +x ./mvnw
 
+      # Built from the root aggregator so -am also builds cadence-events.
       - name: Run unit + integration tests
-        working-directory: ${{ matrix.service }}
-        run: ./mvnw -B -ntp test
+        run: ./mvnw -B -ntp -pl ${{ matrix.service }} -am test
 
       - name: Upload surefire reports
         if: always()
@@ -81,12 +80,10 @@ jobs:
           cache: maven
 
       - name: Make mvnw executable
-        working-directory: ${{ matrix.service }}
         run: chmod +x ./mvnw
 
       - name: Compile + package (skip tests)
-        working-directory: ${{ matrix.service }}
-        run: ./mvnw -B -ntp -DskipTests package
+        run: ./mvnw -B -ntp -pl ${{ matrix.service }} -am -DskipTests package
 
   coverage-summary:
     name: coverage-summary

@@ -1,6 +1,6 @@
 package com.cadence.notification_service.consumers;
 
-import com.cadence.notification_service.events.EmailVerificationEvent;
+import com.cadence.events.EmailVerificationEvent;
 import com.cadence.notification_service.services.WorkerService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -31,8 +31,8 @@ class EmailVerificationConsumerTest {
 
         ArgumentCaptor<EmailVerificationEvent> captor = ArgumentCaptor.forClass(EmailVerificationEvent.class);
         verify(workerService).sendEmailVerificationMail(captor.capture());
-        assertThat(captor.getValue().getEmail()).isEqualTo("alice@example.com");
-        assertThat(captor.getValue().getVerificationLink()).isEqualTo("https://cadence.test/verify?t=abc");
+        assertThat(captor.getValue().email()).isEqualTo("alice@example.com");
+        assertThat(captor.getValue().verificationLink()).isEqualTo("https://cadence.test/verify?t=abc");
     }
 
     @Test

@@ -1,7 +1,7 @@
 package com.project.cadence.integration;
 
-import com.project.cadence.dto.Topics;
-import com.project.cadence.events.RecordCreatedEvent;
+import com.cadence.events.Topics;
+import com.cadence.events.RecordCreatedEvent;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -57,17 +57,17 @@ class RecordKafkaIT extends BaseIntegrationTest {
                 List.of("alice@example.com")
         );
 
-        kafkaTemplate.send(Topics.RECORD_CREATED_TOPIC, event.getRecordId(), event);
+        kafkaTemplate.send(Topics.RECORD_CREATED_TOPIC, event.recordId(), event);
         kafkaTemplate.flush();
 
         ConsumerRecord<String, RecordCreatedEvent> received = pollForOne(Duration.ofSeconds(15));
         assertThat(received).as("expected one message on %s", Topics.RECORD_CREATED_TOPIC).isNotNull();
         assertThat(received.topic()).isEqualTo(Topics.RECORD_CREATED_TOPIC);
         assertThat(received.key()).isEqualTo("record-42");
-        assertThat(received.value().getRecordId()).isEqualTo("record-42");
-        assertThat(received.value().getRecordTitle()).isEqualTo("Certified Lover Boy");
-        assertThat(received.value().getArtists()).containsExactly("artist-1");
-        assertThat(received.value().getFollowerEmails()).containsExactly("alice@example.com");
+        assertThat(received.value().recordId()).isEqualTo("record-42");
+        assertThat(received.value().recordTitle()).isEqualTo("Certified Lover Boy");
+        assertThat(received.value().artists()).containsExactly("artist-1");
+        assertThat(received.value().followerEmails()).containsExactly("alice@example.com");
     }
 
     private ConsumerRecord<String, RecordCreatedEvent> pollForOne(Duration timeout) {

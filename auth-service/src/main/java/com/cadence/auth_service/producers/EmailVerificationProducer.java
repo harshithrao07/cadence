@@ -1,7 +1,7 @@
 package com.cadence.auth_service.producers;
 
-import com.cadence.auth_service.dto.Topics;
-import com.cadence.auth_service.events.EmailVerificationEvent;
+import com.cadence.events.Topics;
+import com.cadence.events.EmailVerificationEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -14,13 +14,13 @@ public class EmailVerificationProducer {
     private final KafkaTemplate<String, EmailVerificationEvent> kafkaTemplate;
 
     public void send(EmailVerificationEvent event) {
-        log.info("Attempting to send message to topic: {}, email: {}", Topics.EMAIL_VERIFICATION_TOPIC, event.getEmail());
-        kafkaTemplate.send(Topics.EMAIL_VERIFICATION_TOPIC, event.getEmail(), event)
+        log.info("Attempting to send message to topic: {}, email: {}", Topics.EMAIL_VERIFICATION_TOPIC, event.email());
+        kafkaTemplate.send(Topics.EMAIL_VERIFICATION_TOPIC, event.email(), event)
                 .whenComplete((result, ex) -> {
                     if (ex == null) {
-                        log.info("Message sent successfully to topic: {}, email: {}", Topics.EMAIL_VERIFICATION_TOPIC, event.getEmail());
+                        log.info("Message sent successfully to topic: {}, email: {}", Topics.EMAIL_VERIFICATION_TOPIC, event.email());
                     } else {
-                        log.error("Failed to send message to topic: {}, email: {}", Topics.EMAIL_VERIFICATION_TOPIC, event.getEmail(), ex);
+                        log.error("Failed to send message to topic: {}, email: {}", Topics.EMAIL_VERIFICATION_TOPIC, event.email(), ex);
                     }
                 });
     }

@@ -1,7 +1,7 @@
 package com.cadence.auth_service.producers;
 
-import com.cadence.auth_service.dto.Topics;
-import com.cadence.auth_service.events.UserCreatedEvent;
+import com.cadence.events.Topics;
+import com.cadence.events.UserCreatedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;

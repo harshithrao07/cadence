@@ -2,7 +2,7 @@ package com.cadence.auth_service.service;
 
 import com.cadence.auth_service.dto.ApiResponseDTO;
 import com.cadence.auth_service.dto.auth.*;
-import com.cadence.auth_service.events.UserCreatedEvent;
+import com.cadence.events.UserCreatedEvent;
 import com.cadence.auth_service.model.*;
 import com.cadence.auth_service.producers.UserCreatedProducer;
 import com.cadence.auth_service.repository.UserRepository;

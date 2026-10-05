@@ -1,0 +1,11 @@
+# Applies to images built with the repo root as context (auth, catalog, playlist, notification).
+# Everything is excluded except the shared module and the Java services.
+*
+!cadence-events
+!auth-service
+!catalog-service
+!playlist-service
+!notification-service
+**/target
+**/.idea
+**/*.iml

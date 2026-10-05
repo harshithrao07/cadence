@@ -1,6 +1,6 @@
 package com.cadence.notification_service.consumers;
 
-import com.cadence.notification_service.events.RecordCreatedEvent;
+import com.cadence.events.RecordCreatedEvent;
 import com.cadence.notification_service.services.WorkerService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -38,8 +38,8 @@ class RecordCreatedConsumerTest {
 
         ArgumentCaptor<RecordCreatedEvent> captor = ArgumentCaptor.forClass(RecordCreatedEvent.class);
         verify(workerService).notifyFollowersOfNewRelease(captor.capture());
-        assertThat(captor.getValue().getRecordId()).isEqualTo("rec-1");
-        assertThat(captor.getValue().getFollowerEmails()).containsExactly("alice@example.com", "bob@example.com");
+        assertThat(captor.getValue().recordId()).isEqualTo("rec-1");
+        assertThat(captor.getValue().followerEmails()).containsExactly("alice@example.com", "bob@example.com");
     }
 
     @Test

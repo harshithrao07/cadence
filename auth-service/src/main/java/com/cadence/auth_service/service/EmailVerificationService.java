@@ -1,7 +1,7 @@
 package com.cadence.auth_service.service;
 
 import com.cadence.auth_service.dto.ApiResponseDTO;
-import com.cadence.auth_service.events.EmailVerificationEvent;
+import com.cadence.events.EmailVerificationEvent;
 import com.cadence.auth_service.model.EmailVerificationToken;
 import com.cadence.auth_service.model.User;
 import com.cadence.auth_service.producers.EmailVerificationProducer;

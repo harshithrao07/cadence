@@ -1,7 +1,7 @@
 package com.cadence.notification_service.services;
 
-import com.cadence.notification_service.events.EmailVerificationEvent;
-import com.cadence.notification_service.events.RecordCreatedEvent;
+import com.cadence.events.EmailVerificationEvent;
+import com.cadence.events.RecordCreatedEvent;
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,14 +19,14 @@ public class WorkerService {
 
 
     public void notifyFollowersOfNewRelease(RecordCreatedEvent event) {
-        String artistNames = event.getArtists()
+        String artistNames = event.artists()
                 .stream()
                 .reduce((a, b) -> a + ", " + b)
                 .orElse("");
 
-        event.getFollowerEmails()
+        event.followerEmails()
                 .forEach(email ->
-                        sendReleaseMail(email, event.getRecordTitle(), artistNames, event.getCoverUrl(), event.getRecordId())
+                        sendReleaseMail(email, event.recordTitle(), artistNames, event.coverUrl(), event.recordId())
                 );
     }
 
@@ -36,9 +36,9 @@ public class WorkerService {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, false, "UTF-8");
 
-            helper.setTo(event.getEmail());
+            helper.setTo(event.email());
             helper.setSubject("Verify your email");
-            helper.setText("Click the link to verify your email:\n" + event.getVerificationLink(), false);
+            helper.setText("Click the link to verify your email:\n" + event.verificationLink(), false);
 
             mailSender.send(message);
         } catch (Exception e) {

@@ -1,6 +1,6 @@
 package com.cadence.notification_service.integration;
 
-import com.cadence.notification_service.dto.Topics;
+import com.cadence.events.Topics;
 import jakarta.mail.internet.MimeMessage;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;

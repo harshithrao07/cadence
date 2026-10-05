@@ -1,6 +1,6 @@
 package com.cadence.auth_service.config;
 
-import com.cadence.auth_service.dto.Topics;
+import com.cadence.events.Topics;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

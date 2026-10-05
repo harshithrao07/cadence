@@ -1,6 +1,6 @@
 package com.cadence.auth_service.auth;
 
-import com.cadence.auth_service.events.UserCreatedEvent;
+import com.cadence.events.UserCreatedEvent;
 import com.cadence.auth_service.model.OAuth2Provider;
 import com.cadence.auth_service.model.Role;
 import com.cadence.auth_service.model.User;

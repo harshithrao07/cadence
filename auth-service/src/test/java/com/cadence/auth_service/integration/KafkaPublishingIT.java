@@ -1,9 +1,9 @@
 package com.cadence.auth_service.integration;
 
-import com.cadence.auth_service.dto.Topics;
+import com.cadence.events.Topics;
 import com.cadence.auth_service.dto.auth.RegisterRequestDTO;
-import com.cadence.auth_service.events.EmailVerificationEvent;
-import com.cadence.auth_service.events.UserCreatedEvent;
+import com.cadence.events.EmailVerificationEvent;
+import com.cadence.events.UserCreatedEvent;
 import com.cadence.auth_service.repository.UserRepository;
 import com.cadence.auth_service.service.AuthenticationService;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -56,21 +56,21 @@ class KafkaPublishingIT extends BaseIntegrationTest {
 
         ConsumerRecord<String, UserCreatedEvent> received = pollForOne(userConsumer, Duration.ofSeconds(15));
         assertThat(received).as("expected one message on %s", Topics.USER_CREATED_TOPIC).isNotNull();
-        assertThat(received.value().getUserId()).isEqualTo(savedUserId);
+        assertThat(received.value().userId()).isEqualTo(savedUserId);
     }
 
     @Test
     void emailVerificationProducer_serializesEvent_andRoutesByEmailKey() {
         EmailVerificationEvent event = new EmailVerificationEvent("bob@example.com", "https://example.com/verify?token=abc");
 
-        emailKafkaTemplate.send(Topics.EMAIL_VERIFICATION_TOPIC, event.getEmail(), event);
+        emailKafkaTemplate.send(Topics.EMAIL_VERIFICATION_TOPIC, event.email(), event);
         emailKafkaTemplate.flush();
 
         ConsumerRecord<String, EmailVerificationEvent> received = pollForOne(emailConsumer, Duration.ofSeconds(15));
         assertThat(received).isNotNull();
         assertThat(received.key()).isEqualTo("bob@example.com");
-        assertThat(received.value().getEmail()).isEqualTo("bob@example.com");
-        assertThat(received.value().getVerificationLink()).isEqualTo("https://example.com/verify?token=abc");
+        assertThat(received.value().email()).isEqualTo("bob@example.com");
+        assertThat(received.value().verificationLink()).isEqualTo("https://example.com/verify?token=abc");
     }
 
     private <T> KafkaConsumer<String, T> newConsumer(Class<T> valueType, String topic) {

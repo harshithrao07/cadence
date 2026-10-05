@@ -12,7 +12,8 @@ for svc in "${SERVICES[@]}"; do
   echo "======================================================================"
   echo "  $svc"
   echo "======================================================================"
-  (cd "$svc" && ./mvnw test -pl . --no-transfer-progress "$@")
+  # Run from the root aggregator; -am builds cadence-events first.
+  ./mvnw test -pl "$svc" -am --no-transfer-progress "$@"
 done
 
 echo

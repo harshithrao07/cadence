@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Build aggregator only (not a parent): each service keeps its own Spring Boot parent.
+  Lets the reactor build cadence-events before the services that depend on it, e.g.
+    ./mvnw -pl auth-service -am test
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.cadence</groupId>
+    <artifactId>cadence</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>cadence-events</module>
+        <module>config-server</module>
+        <module>discovery-service</module>
+        <module>gateway-service</module>
+        <module>auth-service</module>
+        <module>catalog-service</module>
+        <module>playlist-service</module>
+        <module>streaming-service</module>
+        <module>notification-service</module>
+    </modules>
+</project>
