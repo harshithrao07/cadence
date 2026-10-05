@@ -29,8 +29,8 @@ flowchart LR
     kev --> evc
     krc --> rcc
 
-    evc -->|@KafkaListener| ws
-    rcc -->|@KafkaListener| ws
+    evc -->|"@KafkaListener"| ws
+    rcc -->|"@KafkaListener"| ws
 
     ws -->|MimeMessageHelper<br/>+ HTML template| smtp[(SMTP<br/>e.g. Gmail)]
 ```

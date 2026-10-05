@@ -2,7 +2,7 @@
 
 A music streaming backend split into a Spring Cloud microservices monorepo. Authentication, artist/record/song catalog, playlists, play-history analytics, and email notifications — wired together with a service registry, an API gateway, a centralized config server, and Kafka for asynchronous events.
 
-The platform is built around the principle that **one service owns one bounded context, communicates synchronously through the gateway when it has to, and asynchronously through Kafka when it can**. Cross-service reads happen via Feign over Eureka; cross-service writes happen via events.
+The platform is built around the principle that **one service owns one bounded context, communicates synchronously through the gateway when it has to, and asynchronously through Kafka when it can**. Each service has its **own database schema** that no other service can touch; cross-service reads happen via Feign over Eureka or event-fed replicas, and cross-service writes happen via events. Workflows that span services — registration, song deletion, account deletion — run as **choreographed sagas** over Kafka, with a transactional outbox so an event is published if and only if its database change commits.
 
 ---
 
@@ -14,6 +14,7 @@ The platform is built around the principle that **one service owns one bounded c
 - [Services](#services)
 - [Centralized Configuration](#centralized-configuration)
 - [Eventing (Kafka)](#eventing-kafka)
+- [Data Ownership & Sagas](#data-ownership--sagas)
 - [Inter-Service Authentication](#inter-service-authentication)
 - [REST API](#rest-api)
 - [Persistence Model](#persistence-model)
@@ -93,22 +94,16 @@ docker compose down -v         # stop + wipe MySQL and Kafka volumes
 
 ## Architecture
 
-The gateway is the only public-facing process. Every backend service registers with Eureka, fetches its configuration from config-server at startup, and either serves HTTP requests (auth, catalog, playlist, streaming) or runs only as a Kafka consumer (notification).
+The gateway is the only public-facing process. Every backend service registers with Eureka, fetches its configuration from config-server at startup, and either serves HTTP requests (auth, catalog, playlist, streaming) or runs only as a Kafka consumer (notification). Each service with state owns one MySQL schema, reachable only with that service's database user.
 
 ```mermaid
 flowchart TB
     client([Browser / Frontend])
+    client -->|HTTP| gateway[gateway-service<br/>:8080<br/><i>JWT check, routing</i>]
 
-    client -->|HTTP| gateway[gateway-service<br/>:8080]
-
-    subgraph SR[Service Registry]
+    subgraph PLATFORM[Platform services]
         eureka[discovery-service<br/>:8761<br/><i>Eureka</i>]
-    end
-
-    subgraph CFG[Centralized Config]
-        cfgsrv[config-server<br/>:8888]
-        repo[/centralconfigs//]
-        cfgsrv -.reads.-> repo
+        cfgsrv[config-server<br/>:8888<br/><i>centralconfigs/</i>]
     end
 
     subgraph BE[Backend services]
@@ -119,54 +114,39 @@ flowchart TB
         notif[notification-service<br/>:8081<br/><i>no HTTP routes</i>]
     end
 
-    gateway -->|lb://| auth
-    gateway -->|lb://| catalog
-    gateway -->|lb://| playlist
-    gateway -->|lb://| streaming
+    gateway -->|lb://| auth & catalog & playlist & streaming
 
-    auth -.register.-> eureka
-    catalog -.register.-> eureka
-    playlist -.register.-> eureka
-    streaming -.register.-> eureka
-    notif -.register.-> eureka
-    gateway -.fetch registry.-> eureka
-
-    auth -.fetch config.-> cfgsrv
-    catalog -.fetch config.-> cfgsrv
-    playlist -.fetch config.-> cfgsrv
-    streaming -.fetch config.-> cfgsrv
-    notif -.fetch config.-> cfgsrv
-    gateway -.fetch config.-> cfgsrv
-
-    subgraph KAFKA[Kafka topics]
-        userCreated[[auth.user-registered]]
-        emailVerif[[auth.email-verification]]
-        recordCreated[[catalog.record-created]]
+    subgraph MYSQL[MySQL — one schema + one user per service]
+        authdb[(auth_db)]
+        catdb[(catalog_db)]
+        pldb[(playlist_db)]
+        stdb[(streaming_db)]
     end
 
-    auth -.publish.-> userCreated
-    auth -.publish.-> emailVerif
-    catalog -.publish.-> recordCreated
+    auth --> authdb
+    catalog --> catdb
+    playlist --> pldb
+    streaming --> stdb
 
-    userCreated -.consume.-> playlist
-    emailVerif -.consume.-> notif
-    recordCreated -.consume.-> notif
+    kafka{{Kafka<br/><i>&lt;service&gt;.&lt;event&gt; topics</i>}}
+    auth & catalog & playlist & streaming <-->|outbox relay / listeners| kafka
+    kafka -->|emails| notif
 
-    catalog -->|Feign over Eureka| auth
-    playlist -->|Feign over Eureka| auth
-    playlist -->|Feign over Eureka| catalog
+    auth -.->|Feign| catalog & playlist
+    catalog -.->|Feign| playlist & streaming
+    playlist -.->|Feign| auth & catalog
+    streaming -.->|Feign| catalog
 
-    auth --> mysql[(MySQL)]
-    catalog --> mysql
-    playlist --> mysql
-    streaming --> mysql
 ```
 
-Three things are worth calling out:
+Solid arrows are requests and data ownership; dotted arrows are synchronous Feign reads. Every service also registers with Eureka and pulls its config from config-server (omitted for readability).
 
+Things worth calling out:
+
+- **No shared database.** Each service connects as its own MySQL user (`auth_svc`, `catalog_svc`, …) granted only its own schema, so a cross-service query fails with a permission error. Data owned elsewhere arrives through Feign (read-time) or through an event-fed replica (catalog's `user_replica`). See [Data Ownership & Sagas](#data-ownership--sagas).
+- **Kafka carries every cross-service write.** Events go through a transactional outbox in the producer's schema and a relay, so they're published exactly when the business change commits. Feign is only used for synchronous reads — e.g. auth asking catalog for a user's followed artists, playlist asking catalog for song previews, catalog asking playlist who owns a playlist.
 - **Eureka is required at boot** for the gateway and Feign clients to resolve `lb://<service>`. Bring it up first.
 - **Config-server is required at boot** for services that lean on it for placeholders. The `optional:configserver:` import means a missing server won't crash startup, but values like `${DATASOURCE_URL}` will then be unresolved.
-- **Kafka is the only async channel.** Feign is used for synchronous reads (e.g., catalog asking auth for a user preview); writes that fan out across services always go through Kafka.
 
 ---
 
@@ -203,16 +183,19 @@ Two filters bracket every request:
 
 ## Services
 
-| Service | Port | Has HTTP | DB | Kafka | Purpose |
+| Service | Port | Has HTTP | Schema / tables | Kafka | Purpose |
 |---|---:|---|---|---|---|
 | [discovery-service](discovery-service/) | 8761 | Eureka UI | — | — | Service registry. All other services register here. |
 | [config-server](config-server/) | 8888 | Yes (config API) | — | — | Centralized configuration; serves files from `centralconfigs/`. |
 | [gateway-service](gateway-service/) | 8080 | Yes | — | — | Public entry; routes by path prefix; validates JWT; injects auth headers. |
-| [auth-service](auth-service/) | 8085 | Yes | `users`, `email_verification_token` | Producer | Registration, login, JWT issuance, OAuth2 (Google), email verification flow. |
-| [catalog-service](catalog-service/) | 8084 | Yes | `artist`, `record`, `song`, `genre`, `artist_following`, `user_replica` | Producer + consumer | Artists/records/songs/genres CRUD, S3 uploads, follow/unfollow. |
-| [playlist-service](playlist-service/) | 8082 | Yes | `playlist`, `liked_playlists`, `playlist_songs` | Consumer | User playlists + system Liked-Songs playlist. |
-| [streaming-service](streaming-service/) | 8083 | Yes | `play_history` | — | Play-history aggregation, trending songs, listener counts. |
+| [auth-service](auth-service/) | 8085 | Yes | `auth_db`: `users`, `email_verification_token`, `user_deletions` | Producer + consumer | Registration, login, JWT issuance, OAuth2 (Google), email verification. Coordinates the registration and account-deletion sagas. |
+| [catalog-service](catalog-service/) | 8084 | Yes | `catalog_db`: `artist`, `record`, `song`, `genre`, join tables, `artist_following`, `user_replica` | Producer + consumer | Artists/records/songs/genres CRUD, S3 uploads, follow/unfollow, discovery. |
+| [playlist-service](playlist-service/) | 8082 | Yes | `playlist_db`: `playlist`, `playlist_songs`, `liked_playlists` | Producer + consumer | User playlists + the system Liked Songs playlist (registration saga participant). |
+| [streaming-service](streaming-service/) | 8083 | Yes | `streaming_db`: `play_history` | Producer + consumer | Play-history aggregation, trending songs, listener counts. |
 | [notification-service](notification-service/) | 8081 | No (consumer-only) | — | Consumer | SMTP email sender driven by Kafka events. |
+
+Every schema also has an `outbox` table (events waiting to be relayed) and a `processed_events` table (events this
+service has already handled), both provided by [cadence-messaging](cadence-messaging/).
 
 Each service has its own README with deeper architecture diagrams and API details — follow the links above.
 
@@ -278,7 +261,7 @@ See [config-server/README.md](config-server/README.md) for the full layout and h
 
 ## Eventing (Kafka)
 
-Topics are auto-created by the producer on first send (`spring.kafka.admin.auto-create=true`). Single-broker KRaft setup; no Zookeeper.
+Each producing service declares its topics as `NewTopic` beans (3 partitions), created at startup by `KafkaAdmin`. Single-broker KRaft setup; no Zookeeper.
 
 | Topic | Producer | Consumers | Purpose |
 |---|---|---|---|
@@ -289,6 +272,7 @@ Topics are auto-created by the producer on first send (`spring.kafka.admin.auto-
 | `auth.user-updated` | `auth-service.UserUpdatedProducer` | `catalog-service.UserUpdatedConsumer` | User created or profile changed → catalog upserts its `user_replica`. |
 | `catalog.songs-deleted` | `catalog-service.SongsDeletedProducer` | `playlist-service.SongsDeletedConsumer`, `streaming-service.SongsDeletedConsumer` | Record deleted, or songs dropped from a record → playlists and play history forget those song ids. |
 | `auth.user-deletion-requested` | `auth-service.UserDeletionRequestedProducer` | `playlist-service`, `catalog-service`, `streaming-service` `UserDeletionRequestedConsumer` | Account deletion saga: each service purges the user's data and replies `<service>.user-data-purged`; auth deletes the user once all three have. |
+| `playlist.user-data-purged` / `catalog.user-data-purged` / `streaming.user-data-purged` | each participant's `UserDeletionRequestedConsumer` | `auth-service.UserDataPurgedConsumer` | Account deletion saga confirmations. |
 | `catalog.media-updated` | `catalog-service.MediaTargetWriter` | `auth-service.MediaUpdatedConsumer`, `playlist-service.MediaUpdatedConsumer` | Avatar / playlist cover stored or removed → the owning service updates its row after re-checking ownership. |
 
 Event classes and topic names live in [cadence-events](cadence-events/); topics are named `<producing-service>.<event>`.
@@ -301,6 +285,101 @@ Delivery is handled by the shared [cadence-messaging](cadence-messaging/) auto-c
 - **Saga tracing.** Log lines carry `[saga:<id>]`; events published while handling an event keep its `sagaId`.
 
 See [docs/db-per-service-saga-plan.md](docs/db-per-service-saga-plan.md) for the database-per-service migration this is part of.
+
+---
+
+## Data Ownership & Sagas
+
+Every table belongs to exactly one service. When a service needs data it doesn't own, it uses one of three tools:
+
+| Need | Tool | Example |
+|---|---|---|
+| Read someone else's data at request time | **Feign** call to the owner (internal endpoint, circuit breaker + fallback) | auth's profile page asks catalog for followed artists |
+| Read it often, or join against it | **Event-fed replica**, kept in sync from the owner's events | catalog's `user_replica` (names, emails, avatars) from `auth.user-updated` |
+| Change data in several services | **Saga** — a chain of local transactions linked by events | registration, song deletion, account deletion |
+
+Ids that point into another service (`playlist.user_id`, `playlist_songs.song_id`, `play_history.user_id` /
+`song_id`, `artist_following.user_id`) are plain columns without foreign keys; the sagas below keep them tidy, and
+readers skip ids the owner no longer has.
+
+The sagas are **choreographed**: no orchestrator; each participant reacts to the previous step's event, does its
+work in a local transaction, and publishes the next event from the same transaction (outbox). Every event carries a
+`sagaId`, so one saga can be followed across all services' logs (`[saga:<id>]`).
+
+### Registration
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as auth-service
+    participant P as playlist-service
+    participant Cat as catalog-service
+
+    C->>A: POST /auth/v1/register
+    A->>A: users row PENDING<br/>+ outbox auth.user-registered
+    A-)P: auth.user-registered
+    P->>P: create Liked Songs<br/>+ outbox playlist.liked-songs-created
+    P-)A: playlist.liked-songs-created
+    A->>A: user ACTIVE<br/>+ outbox auth.user-updated
+    A-->>C: 201 + tokens<br/>(register waits up to 5 s for the saga)
+    A-)Cat: auth.user-updated → user_replica
+```
+
+- Only `ACTIVE` users get tokens; login, token refresh and Google sign-in are refused while `PENDING`.
+- If the saga isn't done within 5 s, register answers **202** (no tokens) and the user can log in once it finishes.
+- **Compensation:** an invalid request gets `playlist.liked-songs-failed` → the user becomes `FAILED`; a sweeper
+  fails registrations with no reply after 5 minutes (e.g. a dead-lettered request). A `FAILED` user can register
+  again with the same email; a late success still activates.
+
+### Song deletion
+
+```mermaid
+flowchart LR
+    del[catalog: delete a record,<br/>or edit one dropping songs] -->|catalog.songs-deleted<br/>recordId, songIds| pl[playlist: remove the ids<br/>from every playlist]
+    del -->|catalog.songs-deleted| st[streaming: delete their<br/>play history]
+```
+
+Forward-only (nothing to undo): consumers are idempotent and retry, then dead-letter. Reads already skip songs catalog
+no longer has, so leftover ids are invisible until purged (~1 s). The record's S3 files are deleted after the delete
+commits.
+
+### Account deletion
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as auth-service
+    participant P as playlist-service
+    participant Cat as catalog-service
+    participant S as streaming-service
+
+    C->>A: DELETE /api/v1/user/me
+    A->>A: user DELETING (no login / refresh)<br/>+ outbox auth.user-deletion-requested
+    A-->>C: 202
+    par purge in parallel
+        A-)P: deletion requested
+        P-)A: playlist.user-data-purged<br/>(playlists, likes)
+    and
+        A-)Cat: deletion requested
+        Cat-)A: catalog.user-data-purged<br/>(follows, replica row)
+    and
+        A-)S: deletion requested
+        S-)A: streaming.user-data-purged<br/>(play history)
+    end
+    A->>A: all three confirmed (user_deletions)<br/>→ delete the users row
+```
+
+Forward-only: a sweeper re-sends the request for deletions still incomplete after 10 minutes, and every participant
+is idempotent. The email can be used to register again once the row is gone.
+
+### Known gaps
+
+- Access tokens are stateless JWTs; after an account deletion, a still-valid access token (≤ 15 min) can still reach
+  catalog / playlist / streaming.
+- S3 files of deleted accounts, and audio of songs dropped from a record, are not removed.
+- notification-service has no database, so a redelivered event can send a duplicate email.
 
 ---
 
@@ -370,7 +449,41 @@ volume, run it once: `docker compose exec mysql sh /docker-entrypoint-initdb.d/0
 on Windows, prefix `MSYS_NO_PATHCONV=1`). Data owned by another service comes from Feign calls or event-fed replicas
 (catalog's `user_replica`). Moving a service to its own MySQL server is a config change (its `DATASOURCE_*`).
 
-The ER diagram below predates the split; tables are now grouped by the schemas above.
+```mermaid
+flowchart LR
+    subgraph auth_db
+        users[users<br/><i>status: PENDING / ACTIVE / FAILED / DELETING</i>]
+        evt[email_verification_token]
+        ud[user_deletions]
+    end
+    subgraph catalog_db
+        artist[artist]
+        record[record]
+        song[song]
+        genre[genre]
+        follow[artist_following]
+        replica[user_replica]
+    end
+    subgraph playlist_db
+        playlist[playlist]
+        ps[playlist_songs]
+        lp[liked_playlists]
+    end
+    subgraph streaming_db
+        ph[play_history]
+    end
+
+    users -.->|auth.user-updated| replica
+    follow -.->|user_id| users
+    playlist -.->|user_id| users
+    ps -.->|song_id| song
+    ph -.->|user_id, song_id| song
+```
+
+Dotted lines are references by id only (no foreign key across schemas), kept consistent by events and sagas. Every
+schema also holds its service's `outbox` and `processed_events`.
+
+Column-level detail (diagram from before the split; the tables are unchanged apart from the additions above):
 
 ![Cadence ER Diagram](assets/cadenceDB.png)
 
@@ -395,9 +508,12 @@ cadence/
 ├── notification-service/
 ├── cadence-events/             # shared Kafka event records + topic names
 ├── cadence-messaging/          # auto-config: transactional outbox + relay, idempotent consumers, DLT, saga ids
-├── cadence-frontend/           # React/Vite client (separate workspace)
-├── pom.xml                     # build aggregator (not a parent) — builds cadence-events before the services
-├── compose.yaml                # local Kafka + MySQL via Docker Compose
+├── cadence-frontend/           # Next.js client (separate workspace)
+├── cadence-seed/               # bulk-loads fake data into all four schemas
+├── docker/mysql/init/          # creates the per-service schemas and MySQL users
+├── docs/                       # design notes (db-per-service + saga plan)
+├── pom.xml                     # build aggregator (not a parent) — builds the shared modules before the services
+├── compose.yaml                # the whole stack: MySQL, Kafka, services, frontend
 ├── env.properties              # local secrets — gitignored
 ├── run-all-tests.sh            # runs unit + IT across every service
 ├── TESTING.md                  # test layout, IT setup, Docker workarounds
@@ -554,7 +670,12 @@ docker run --rm --network cadence_default \
 - **Hot config reload via `/actuator/refresh`.** Properties bound via `@ConfigurationProperties` (e.g., `GatewaySecretProperties` for `gateway.secret`) rebind in place when `POST /actuator/refresh` fires, so secret rotation doesn't require a restart. The filters that read these properties hold the same bean reference and call the getter per request — they see new values on the next request.
 - **Config-server serves placeholder text, not values.** Secrets live in env vars or local `env.properties`; the config-server only knows the *shape* of the config. Rotating a secret doesn't require touching the repo.
 - **`spring.config.import=optional:`** for both env file and config server. A service starts even if either is missing — tests in particular rely on this so they don't need the whole stack running.
-- **Each service owns its tables.** Cross-service reads via Feign (synchronous) or event-fed replicas (async); no service queries another's tables. See [docs/db-per-service-saga-plan.md](docs/db-per-service-saga-plan.md).
+- **Database per service, enforced by the database.** One schema and one MySQL user per service with grants on its own schema only — a cross-service query isn't a convention violation, it's a permission error. Moving a service to its own server is a `DATASOURCE_*` change.
+- **Transactional outbox instead of dual writes.** Writing the row and calling Kafka separately can lose events (Kafka down) or publish phantoms (rollback). The event is inserted into the service's `outbox` in the same transaction; a relay (`FOR UPDATE SKIP LOCKED`, safe with several instances) delivers it at least once. Permanent Kafka errors park the row; a retriable failure only holds back its own topic. Columns follow Debezium's outbox router so CDC can replace polling.
+- **At-least-once + idempotent consumers = effectively once.** Consumers record `(handler, eventId)` in `processed_events` in the same transaction as their change; redeliveries are skipped.
+- **Choreography over orchestration.** The sagas are short (2–3 participants, mostly forward-only), so each service reacts to events instead of a central coordinator; the initiating service tracks the outcome (`users.status`, `user_deletions`) and `sagaId` in every log line keeps it traceable.
+- **Synchronous facade over an async saga.** Registration waits up to 5 s for its saga so the common case keeps the classic 201-with-tokens contract; slow cases degrade to 202.
+- **Replicas, not cross-service joins.** catalog keeps `user_replica` from `auth.user-updated` (older snapshots ignored by `occurredAt`), so follower lists and release emails don't call auth.
 - **Kafka is the async fan-out.** Producers and consumers don't share a request lifecycle; a registration completing successfully doesn't block on the email actually being sent. Consumer crashes/lag don't break user-facing flows.
 - **Topics auto-created by producers.** `spring.kafka.admin.auto-create=true` plus `NewTopic` beans give a deterministic schema (3 partitions, 1 replica) without provisioning scripts.
 - **Containers reused across test classes.** `BaseIntegrationTest` starts MySQL/Kafka in a `static {}` block instead of `@Container`, so multiple ITs in one JVM share one container — saves ~10s startup per test class.
@@ -569,3 +690,6 @@ docker run --rm --network cadence_default \
 - **Gateway returns 503 for a service** — that service hasn't registered with Eureka yet, or it crashed at startup. Check Eureka dashboard.
 - **Kafka `Connection refused`** — `docker compose up -d` not run, or `KAFKA_URL` mismatch.
 - **`Could not find a valid Docker environment` during tests** — see TESTING.md for the Docker Desktop on Windows workaround.
+- **`Access denied for user 'auth_svc'` / `Unknown database 'auth_db'`** — the MySQL volume predates the per-service schemas. Run `docker compose exec mysql sh /docker-entrypoint-initdb.d/01-service-schemas.sh` once (Git Bash: prefix `MSYS_NO_PATHCONV=1`).
+- **Signup answers 202 / login says the account is still being set up** — the registration saga hasn't finished: check that playlist-service is running and consuming `auth.user-registered`. It completes on its own once playlist catches up.
+- **An event never arrives** — look at the producer's `outbox` table: `sent_at` NULL with `failed_at` set means Kafka rejected it permanently (see `last_error`; set `failed_at` back to NULL to retry). Messages a consumer couldn't handle are on `<topic>.DLT`.

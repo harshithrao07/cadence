@@ -29,30 +29,32 @@ flowchart TB
     gw -->|/api/v1/user/**,<br/>/api/v1/email/**| auth
 
     auth --> ac[AuthenticationController<br/>register / authenticate]
-    auth --> uc[UserController]
+    auth --> uc[UserController<br/>profile, DELETE /me]
     auth --> evc[EmailVerificationController]
-    auth --> appc[AppController<br/>ping / verify-email]
-
-    ac --> as[AuthenticationService]
-    as --> ur[UserRepository]
-    as --> pe[PasswordEncoder<br/>BCrypt]
-    as --> jwt[JwtUtil]
-    as --> ucp[UserRegisteredProducer]
-
-    evc --> evs[EmailVerificationService]
-    evs --> evtr[EmailVerificationTokenRepository]
-    evs --> evp[EmailVerificationProducer]
-
     auth --> oauth[OAuthUserService<br/>+ CustomOAuth2SuccessHandler]
-    oauth --> ur
 
-    ur --> mysql[(MySQL<br/>users<br/>email_verification_token)]
+    ac --> reg[RegistrationSaga]
+    oauth --> reg
+    uc --> del[UserDeletionSaga]
+    evc --> evs[EmailVerificationService]
+    uc -.->|Feign| catalog[catalog-service<br/>followed artists]
+    uc -.->|Feign| playlistsvc[playlist-service<br/>user's playlists]
 
-    ucp --> kuc[[auth.user-registered]]
-    evp --> kev[[auth.email-verification]]
+    reg --> db[(auth_db<br/>users · email_verification_token<br/>user_deletions · outbox · processed_events)]
+    del --> db
+    evs --> db
 
-    kuc -.consumed.-> playlist[playlist-service]
-    kev -.consumed.-> notif[notification-service]
+    db --> relay[[outbox relay]]
+    relay --> out1[[auth.user-registered]]
+    relay --> out2[[auth.user-updated]]
+    relay --> out3[[auth.user-deletion-requested]]
+    relay --> out4[[auth.email-verification]]
+
+    in1[[playlist.liked-songs-created / -failed]] --> reg
+    in2[[*.user-data-purged]] --> del
+    in3[[catalog.media-updated]] --> avatar[MediaUpdatedConsumer<br/>apply avatar] --> db
+
+    sweep[sweepers<br/>registration timeout · deletion retry] --> reg & del
 ```
 
 ## Registration Flow

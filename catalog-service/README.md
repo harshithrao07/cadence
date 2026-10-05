@@ -17,37 +17,30 @@ Owns the music catalog: artists, records (albums/EPs/singles), songs, genres. Ha
 flowchart TB
     gw[gateway-service] --> catalog[catalog-service<br/>:8084]
 
-    catalog --> ac[ArtistController]
+    catalog --> ac[ArtistController<br/>+ follow / unfollow]
     catalog --> rc[RecordController]
     catalog --> sc[SongController]
     catalog --> gc[GenreController]
-    catalog --> fc[FilesController<br/>S3 upload/download]
-    catalog --> dc[DiscoverController<br/>search/discover]
-    catalog --> ic[InternalController]
+    catalog --> fc[AwsController<br/>S3 upload / presigned URLs]
+    catalog --> dc[GenericController<br/>search / discover]
+    catalog --> ic[Internal controllers<br/>song previews, followed artists]
 
-    ac --> as[ArtistService]
-    rc --> rs[RecordService]
-    sc --> ss[SongService]
-    gc --> gs[GenreService]
-    fc --> aws[AwsService]
+    fc --> aws[AwsService<br/>+ UploadAuthorizer] --> s3[(AWS S3<br/>covers · audio · avatars)]
+    aws --> mtw[MediaTargetWriter]
+    aws -.->|Feign: playlist owner| playlistsvc[playlist-service]
+    dc -.->|Feign: trending, history| streaming[streaming-service]
+    dc -.->|Feign: playlist search| playlistsvc
 
-    as --> ar[ArtistRepository]
-    as --> jdbc{{JdbcTemplate}}
-    rs --> rr[RecordRepository]
-    rs --> rcp[RecordCreatedProducer]
-    ss --> sr[SongRepository]
-    gs --> gr[GenreRepository]
+    ac & rc & sc & gc & dc & ic & mtw --> db[(catalog_db<br/>artist · record · song · genre · join tables<br/>artist_following · user_replica<br/>outbox · processed_events)]
 
-    ar --> mysql[(MySQL<br/>artist, record,<br/>song, genre,<br/>+ join tables)]
-    rr --> mysql
-    sr --> mysql
-    gr --> mysql
-    jdbc -.cross-service reads.-> mysql
+    db --> relay[[outbox relay]]
+    relay --> out1[[catalog.record-created]]
+    relay --> out2[[catalog.songs-deleted]]
+    relay --> out3[[catalog.media-updated]]
+    relay --> out4[[catalog.user-data-purged]]
 
-    aws --> s3[(AWS S3<br/>cover art<br/>audio files)]
-
-    rcp --> kafka[[catalog.record-created topic]]
-    kafka -.consumed.-> notif[notification-service]
+    in1[[auth.user-updated]] --> rep[UserUpdatedConsumer<br/>upsert user_replica] --> db
+    in2[[auth.user-deletion-requested]] --> purge[UserDeletionRequestedConsumer<br/>follows + replica row] --> db
 ```
 
 ## Follows and the User Replica
@@ -148,7 +141,7 @@ All public routes are under `/api/v1/` and reachable through the gateway.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `/api/v1/files/**` | `FilesController` | S3 upload (admin) + signed URL retrieval |
+| `/api/v1/files/**` | `AwsController` | S3 uploads + presigned URLs, allow-listed targets only (admins for catalog media; users for their own avatar and playlist covers) — see File Uploads |
 | GET | `/api/v1/search?key=` | Cross-entity search (artists + records + songs + playlists) |
 | GET | `/api/v1/discover` | Recommendation feed: popular artists, new releases, suggested by liked genres |
 
@@ -263,7 +256,7 @@ cd catalog-service
 Required env:
 
 - `DATASOURCE_*`, `KAFKA_URL`
-- `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, `AWS_REGION`, `AWS_S3_BUCKET` — needed for FilesController to work; if you skip these, S3 uploads will fail but other endpoints still work.
+- `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, `AWS_REGION`, `AWS_S3_BUCKET` — needed for AwsController to work; if you skip these, S3 uploads will fail but other endpoints still work.
 
 ## Boot Order
 

@@ -16,15 +16,18 @@ flowchart TB
     gw[gateway-service] --> streaming[streaming-service<br/>:8083]
 
     streaming --> sc[StreamingController]
-    sc --> ws[WorkerService<br/>recordPlay]
+    sc --> ss[StreamingService<br/>stream a song]
     sc --> phs[PlayHistoryService<br/>aggregations]
-    sc --> ass[AwsStreamingService<br/>signed URL]
+    ss --> ws[WorkerService<br/>recordPlay]
+    ss --> ass[AwsStreamingService<br/>ranged S3 reads]
 
-    ws --> phr[PlayHistoryRepository]
-    phs --> phr
-
-    phr --> mysql[(MySQL<br/>play_history)]
+    ss -.->|Feign: streaming metadata| catalog[catalog-service]
+    ws & phs --> db[(streaming_db<br/>play_history · outbox · processed_events)]
     ass --> s3[(AWS S3)]
+
+    in1[[catalog.songs-deleted]] --> sd[SongsDeletedConsumer<br/>drop their history] --> db
+    in2[[auth.user-deletion-requested]] --> purge[UserDeletionRequestedConsumer<br/>drop the user's history] --> db
+    db --> relay[[outbox relay]] --> out1[[streaming.user-data-purged]]
 ```
 
 `WorkerService.recordPlay` is the only write path; everything else is read-side aggregation.
@@ -173,6 +176,6 @@ Required env:
 
 ## Boot Order
 
-discovery-service → config-server → streaming-service. Independent of every other backend service at startup; the only cross-service references are by ID (no Feign calls).
+discovery-service → config-server → streaming-service. Starts without any other backend service. At runtime, streaming a song calls catalog-service over Feign for its metadata; user and song ids in `play_history` are references by id only (no cross-schema foreign keys), cleaned up by the song-deletion and account-deletion sagas.
 
 **Account deletion:** consumes `auth.user-deletion-requested`, deletes the user's play history, and confirms with `streaming.user-data-purged` in the same transaction (idempotent).

@@ -18,24 +18,22 @@ flowchart TB
     gw[gateway-service] --> playlist[playlist-service<br/>:8082]
 
     playlist --> pc[PlaylistController]
+    playlist --> ipc[InternalPlaylistController<br/>playlist owner]
     pc --> ps[PlaylistService]
 
-    ps --> pr[PlaylistRepository]
-    ps --> lpr[LikedPlaylistRepository]
-    ps --> upc[UserPreviewClient<br/>Feign]
-    ps --> cpc[CatalogPreviewClient<br/>Feign]
+    ps -.->|Feign: user previews| auth[auth-service]
+    ps -.->|Feign: song previews| catalog[catalog-service]
 
-    pr --> mysql[(MySQL<br/>playlist<br/>liked_playlists<br/>playlist_songs)]
-    lpr --> mysql
+    ps & ipc --> db[(playlist_db<br/>playlist · playlist_songs · liked_playlists<br/>outbox · processed_events)]
 
-    upc -.via Eureka.- auth[auth-service]
-    cpc -.via Eureka.- catalog[catalog-service]
+    in1[[auth.user-registered]] --> reg[UserRegisteredConsumer<br/>create Liked Songs] --> db
+    in2[[catalog.songs-deleted]] --> sd[SongsDeletedConsumer<br/>remove ids from playlists] --> db
+    in3[[catalog.media-updated]] --> cover[MediaUpdatedConsumer<br/>apply cover] --> db
+    in4[[auth.user-deletion-requested]] --> purge[UserDeletionRequestedConsumer<br/>playlists + likes] --> db
 
-    kafka[[auth.user-registered topic]]
-    kafka -->|UserRegisteredConsumer| ucc[UserRegisteredConsumer]
-    ucc -->|createLikedSongsPlaylistForUser| ps
-
-    auth -.publishes.-> kafka
+    db --> relay[[outbox relay]]
+    relay --> out1[[playlist.liked-songs-created / -failed]]
+    relay --> out2[[playlist.user-data-purged]]
 ```
 
 ## Like Flow (composite-key tracking)
