@@ -5,7 +5,9 @@ import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.GetObjectRequest;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.S3Object;
+import com.project.cadence.constant.UploadTarget;
 import com.project.cadence.dto.s3.FileUploadResult;
+import com.project.cadence.dto.s3.MetadataDTO;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.Part;
 import jakarta.transaction.Transactional;
@@ -19,11 +21,9 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
-import java.nio.file.AccessDeniedException;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
-import static com.project.cadence.constant.AdminOnlyUploadTables.TABLES;
 
 
 @Slf4j
@@ -33,6 +33,7 @@ public class AwsService {
 
     private final AmazonS3 amazonS3;
     private final JdbcTemplate jdbcTemplate;
+    private final UploadAuthorizer uploadAuthorizer;
 
     @Value("${cloud.aws.s3.bucket}")
     private String s3BucketName;
@@ -48,33 +49,47 @@ public class AwsService {
         return amazonS3.doesObjectExist(s3BucketName, fileName);
     }
 
+    /**
+     * Presigned URL requested by a client: the target must be allow-listed and the caller allowed to modify it.
+     */
+    public ResponseEntity<String> getPresignedUrlForClient(MetadataDTO metadata, String userId, boolean isAdmin) {
+        Optional<UploadTarget> target = UploadTarget.of(metadata.category(), metadata.subCategory());
+        if (target.isEmpty() || !UploadAuthorizer.isValidPrimaryKey(metadata.primaryKey())) {
+            return ResponseEntity.badRequest().build();
+        }
+        if (!uploadAuthorizer.mayModify(target.get(), metadata.primaryKey(), userId, isAdmin)) {
+            log.warn("User {} denied presigned {} for {} {}", userId, metadata.httpMethod(), target.get(), metadata.primaryKey());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return ResponseEntity.ok(presign(target.get(), metadata.primaryKey(), metadata.httpMethod()));
+    }
+
+    /**
+     * For trusted callers inside catalog-service (no authorization). The target must still be allow-listed.
+     */
     public String getPresignedUrl(String category, String subCategory, String primaryKey, HttpMethod httpMethod) {
-        String fileName = category + "/" + subCategory + "/" + primaryKey;
+        UploadTarget target = UploadTarget.of(category, subCategory)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown upload target: " + category + " " + subCategory));
+        return presign(target, primaryKey, httpMethod);
+    }
+
+    private String presign(UploadTarget target, String primaryKey, HttpMethod httpMethod) {
+        String fileName = target.objectKey(primaryKey);
         log.info("Generated file name '{}' for saving in bucket '{}'", fileName, s3BucketName);
 
         if (httpMethod.equals(HttpMethod.DELETE)) {
-            handleDeleteDbUpdate(category, subCategory, primaryKey);
+            handleDeleteDbUpdate(target, primaryKey);
         }
 
         return generateUrl(fileName, httpMethod);
     }
 
     @Transactional
-    public void handleDeleteDbUpdate(
-            String category,
-            String subCategory,
-            String primaryKey
-    ) {
+    public void handleDeleteDbUpdate(UploadTarget target, String primaryKey) {
         try {
-            String sql = "UPDATE " + category +
-                    " SET " + subCategory + " = NULL WHERE id = ?";
-
-            jdbcTemplate.update(sql, primaryKey);
+            jdbcTemplate.update(target.updateSql(), null, primaryKey);
         } catch (Exception e) {
-            log.error(
-                    "DB update failed for delete. table={}, column={}, id={}",
-                    category, subCategory, primaryKey, e
-            );
+            log.error("DB update failed for delete. target={}, id={}", target, primaryKey, e);
         }
     }
 
@@ -90,16 +105,28 @@ public class AwsService {
         return amazonS3.getObject(s3BucketName, fileName);
     }
 
-    public ResponseEntity<List<FileUploadResult>> save(boolean isAdmin, List<Part> parts) {
+    /**
+     * Uploads files named "table column primaryKey". Every part is validated and authorized before anything is
+     * uploaded: an unknown target or bad id is a 400, a target the caller may not modify is a 403.
+     */
+    public ResponseEntity<List<FileUploadResult>> save(String userId, boolean isAdmin, List<Part> parts) {
         try {
-            List<CompletableFuture<FileUploadResult>> futures = new ArrayList<>();
-
+            List<UploadRequest> requests = new ArrayList<>();
             for (Part part : parts) {
-                CompletableFuture<FileUploadResult> future = uploadFileAsync(isAdmin, part);
-                if (future == null) {
-                    return null;
+                Optional<UploadRequest> request = UploadRequest.parse(part);
+                if (request.isEmpty()) {
+                    return ResponseEntity.badRequest().build();
                 }
-                futures.add(future); // async call returns CompletableFuture
+                if (!uploadAuthorizer.mayModify(request.get().target(), request.get().primaryKey(), userId, isAdmin)) {
+                    log.warn("User {} denied upload to {} {}", userId, request.get().target(), request.get().primaryKey());
+                    return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+                }
+                requests.add(request.get());
+            }
+
+            List<CompletableFuture<FileUploadResult>> futures = new ArrayList<>();
+            for (UploadRequest request : requests) {
+                futures.add(uploadFileAsync(request.target(), request.primaryKey(), request.part()));
             }
 
             // Wait for all uploads to complete
@@ -109,19 +136,9 @@ public class AwsService {
                     .toList();
 
             for (FileUploadResult result : uploadResults) {
-                // Dynamic SQL to update the column with the file URL
-                String sql = String.format(
-                        "UPDATE %s SET %s = ? WHERE id = ?",
-                        result.tableName(),
-                        result.columnName()
-                );
-
-                jdbcTemplate.update(sql, result.url(), result.primaryKey());
-                log.info("Updated table '{}' column '{}' for pk '{}' with URL '{}'",
-                        result.tableName(),
-                        result.columnName(),
-                        result.primaryKey(),
-                        result.url());
+                UploadTarget target = UploadTarget.of(result.tableName(), result.columnName()).orElseThrow();
+                jdbcTemplate.update(target.updateSql(), result.url(), result.primaryKey());
+                log.info("Updated {} for pk '{}' with URL '{}'", target, result.primaryKey(), result.url());
             }
 
             return new ResponseEntity<>(uploadResults, HttpStatus.OK);
@@ -132,27 +149,9 @@ public class AwsService {
     }
 
     @Async
-    public CompletableFuture<FileUploadResult> uploadFileAsync(boolean isAdmin, Part part) {
+    public CompletableFuture<FileUploadResult> uploadFileAsync(UploadTarget target, String primaryKey, Part part) {
         try {
-            long size = part.getSize();
-            String submittedName = part.getSubmittedFileName();
-            String[] nameParts = submittedName.split(" ");
-
-            if (nameParts.length != 3) {
-                throw new IllegalArgumentException("Invalid file naming format");
-            }
-
-            String tableName = nameParts[0];
-            String columnName = nameParts[1];
-            String primaryKey = nameParts[2];
-
-            String objectKey = tableName + "/" + columnName + "/" + primaryKey;
-
-            if (TABLES.contains(tableName) && !isAdmin) {
-                return CompletableFuture.failedFuture(
-                        new AccessDeniedException("Admin access required")
-                );
-            }
+            String objectKey = target.objectKey(primaryKey);
 
             /* --------- CHECK & DELETE EXISTING FILE --------- */
             if (amazonS3.doesObjectExist(s3BucketName, objectKey)) {
@@ -161,14 +160,9 @@ public class AwsService {
             }
 
             // Delete case
-            if (size == 0) {
+            if (part.getSize() == 0) {
                 return CompletableFuture.completedFuture(
-                        new FileUploadResult(
-                                tableName,
-                                columnName,
-                                primaryKey,
-                                null
-                        )
+                        new FileUploadResult(target.table(), target.column(), primaryKey, null)
                 );
             }
 
@@ -177,7 +171,6 @@ public class AwsService {
             metadata.setContentLength(part.getSize());
             metadata.setContentType(part.getContentType());
 
-            System.out.println("Uploading: " + objectKey);
             amazonS3.putObject(
                     s3BucketName,
                     objectKey,
@@ -187,20 +180,25 @@ public class AwsService {
 
             log.info("File uploaded successfully: {}/{}", s3BucketName, objectKey);
 
-            String fileUrl = getUrl(objectKey);
-
             return CompletableFuture.completedFuture(
-                    new FileUploadResult(
-                            tableName,
-                            columnName,
-                            primaryKey,
-                            fileUrl
-                    )
+                    new FileUploadResult(target.table(), target.column(), primaryKey, getUrl(objectKey))
             );
 
         } catch (Exception e) {
             log.error("Error uploading file", e);
             return CompletableFuture.failedFuture(e);
+        }
+    }
+
+    private record UploadRequest(UploadTarget target, String primaryKey, Part part) {
+        /** Parses a part named "table column primaryKey"; empty if the target isn't allow-listed or the id is invalid. */
+        static Optional<UploadRequest> parse(Part part) {
+            String name = part.getSubmittedFileName();
+            String[] nameParts = name == null ? new String[0] : name.split(" ");
+            if (nameParts.length != 3 || !UploadAuthorizer.isValidPrimaryKey(nameParts[2])) {
+                return Optional.empty();
+            }
+            return UploadTarget.of(nameParts[0], nameParts[1]).map(t -> new UploadRequest(t, nameParts[2], part));
         }
     }
 

@@ -6,7 +6,9 @@ import com.amazonaws.services.s3.model.GeneratePresignedUrlRequest;
 import com.amazonaws.services.s3.model.GetObjectRequest;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.S3Object;
+import com.project.cadence.constant.UploadTarget;
 import com.project.cadence.dto.s3.FileUploadResult;
+import com.project.cadence.dto.s3.MetadataDTO;
 import jakarta.servlet.http.Part;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,6 +37,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -44,6 +47,7 @@ class AwsServiceTest {
 
     @Mock AmazonS3 amazonS3;
     @Mock JdbcTemplate jdbcTemplate;
+    @Mock UploadAuthorizer uploadAuthorizer;
 
     @InjectMocks AwsService awsService;
 
@@ -94,7 +98,7 @@ class AwsServiceTest {
 
         awsService.getPresignedUrl("artist", "profile_url", "a-1", HttpMethod.DELETE);
 
-        verify(jdbcTemplate).update("UPDATE artist SET profile_url = NULL WHERE id = ?", "a-1");
+        verify(jdbcTemplate).update("UPDATE artist SET profile_url = ? WHERE id = ?", null, "a-1");
     }
 
     @Test
@@ -102,7 +106,7 @@ class AwsServiceTest {
         when(jdbcTemplate.update(anyString(), any(Object.class)))
                 .thenThrow(new RuntimeException("db down"));
 
-        awsService.handleDeleteDbUpdate("artist", "profile_url", "a-1");
+        awsService.handleDeleteDbUpdate(UploadTarget.ARTIST_PICTURE, "a-1");
     }
 
     @Test
@@ -173,20 +177,71 @@ class AwsServiceTest {
         assertThat(awsService.getFileSize("song/abc")).isEqualTo(4096L);
     }
 
+    @Test
+    void getPresignedUrl_rejectsTargetsOutsideAllowList() {
+        assertThatThrownBy(() -> awsService.getPresignedUrl("users", "password_hash", "u-1", HttpMethod.DELETE))
+                .isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(jdbcTemplate);
+    }
+
+    // ── getPresignedUrlForClient (authorization) ──────────────────────────
+
+    @Test
+    void presignedForClient_injectionInCategory_isBadRequest_andTouchesNothing() {
+        MetadataDTO metadata = new MetadataDTO("users SET role='ADMIN' WHERE 1=1 OR id", "profile_url", "u-1", HttpMethod.DELETE);
+
+        ResponseEntity<String> result = awsService.getPresignedUrlForClient(metadata, "u-1", false);
+
+        assertThat(result.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        verifyNoInteractions(jdbcTemplate, amazonS3);
+    }
+
+    @Test
+    void presignedForClient_invalidPrimaryKey_isBadRequest() {
+        MetadataDTO metadata = new MetadataDTO("users", "profile_url", "../song/song_url/x", HttpMethod.PUT);
+
+        assertThat(awsService.getPresignedUrlForClient(metadata, "u-1", false).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+        verifyNoInteractions(jdbcTemplate, amazonS3);
+    }
+
+    @Test
+    void presignedForClient_notAllowed_isForbidden_andTouchesNothing() {
+        MetadataDTO metadata = new MetadataDTO("song", "song_url", "s-1", HttpMethod.PUT);
+        when(uploadAuthorizer.mayModify(UploadTarget.SONG_AUDIO, "s-1", "u-1", false)).thenReturn(false);
+
+        assertThat(awsService.getPresignedUrlForClient(metadata, "u-1", false).getStatusCode())
+                .isEqualTo(HttpStatus.FORBIDDEN);
+        verifyNoInteractions(jdbcTemplate, amazonS3);
+    }
+
+    @Test
+    void presignedForClient_allowedDelete_clearsColumn_andReturnsUrl() throws Exception {
+        MetadataDTO metadata = new MetadataDTO("users", "profile_url", "u-1", HttpMethod.DELETE);
+        when(uploadAuthorizer.mayModify(UploadTarget.USER_AVATAR, "u-1", "u-1", false)).thenReturn(true);
+        when(amazonS3.generatePresignedUrl(eq(BUCKET), eq("users/profile_url/u-1"), any(Date.class), eq(HttpMethod.DELETE)))
+                .thenReturn(new URL("https://signed.test/users/profile_url/u-1"));
+
+        ResponseEntity<String> result = awsService.getPresignedUrlForClient(metadata, "u-1", false);
+
+        assertThat(result.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(result.getBody()).isEqualTo("https://signed.test/users/profile_url/u-1");
+        verify(jdbcTemplate).update("UPDATE users SET profile_url = ? WHERE id = ?", null, "u-1");
+    }
+
     // ── uploadFileAsync ───────────────────────────────────────────────────
 
     @Test
     void uploadFileAsync_uploadsNewFile_andReturnsResult_withGeneratedUrl() throws Exception {
         Part part = mock(Part.class, "song uploadPart");
         when(part.getSize()).thenReturn(1234L);
-        when(part.getSubmittedFileName()).thenReturn("song song_url abc-123");
         when(part.getContentType()).thenReturn("audio/mpeg");
         when(part.getInputStream()).thenReturn(new ByteArrayInputStream(new byte[1234]));
         when(amazonS3.doesObjectExist(BUCKET, "song/song_url/abc-123")).thenReturn(false);
         URL url = new URL("https://test-bucket.s3.amazonaws.com/song/song_url/abc-123");
         when(amazonS3.getUrl(BUCKET, "song/song_url/abc-123")).thenReturn(url);
 
-        FileUploadResult result = awsService.uploadFileAsync(true, part).get();
+        FileUploadResult result = awsService.uploadFileAsync(UploadTarget.SONG_AUDIO, "abc-123", part).get();
 
         assertThat(result.tableName()).isEqualTo("song");
         assertThat(result.columnName()).isEqualTo("song_url");
@@ -200,14 +255,13 @@ class AwsServiceTest {
     void uploadFileAsync_deletesExistingObject_beforeUpload_whenObjectExists() throws Exception {
         Part part = mock(Part.class);
         when(part.getSize()).thenReturn(100L);
-        when(part.getSubmittedFileName()).thenReturn("song song_url abc-123");
         when(part.getContentType()).thenReturn("audio/mpeg");
         when(part.getInputStream()).thenReturn(new ByteArrayInputStream(new byte[100]));
         when(amazonS3.doesObjectExist(BUCKET, "song/song_url/abc-123")).thenReturn(true);
         when(amazonS3.getUrl(BUCKET, "song/song_url/abc-123"))
                 .thenReturn(new URL("https://x.test/y"));
 
-        awsService.uploadFileAsync(true, part).get();
+        awsService.uploadFileAsync(UploadTarget.SONG_AUDIO, "abc-123", part).get();
 
         verify(amazonS3).deleteObject(BUCKET, "song/song_url/abc-123");
         verify(amazonS3).putObject(eq(BUCKET), eq("song/song_url/abc-123"), any(), any(ObjectMetadata.class));
@@ -217,10 +271,9 @@ class AwsServiceTest {
     void uploadFileAsync_returnsResultWithNullUrl_whenSizeIsZero_signalingDelete() throws Exception {
         Part part = mock(Part.class);
         when(part.getSize()).thenReturn(0L);
-        when(part.getSubmittedFileName()).thenReturn("song song_url abc-123");
         when(amazonS3.doesObjectExist(BUCKET, "song/song_url/abc-123")).thenReturn(true);
 
-        FileUploadResult result = awsService.uploadFileAsync(true, part).get();
+        FileUploadResult result = awsService.uploadFileAsync(UploadTarget.SONG_AUDIO, "abc-123", part).get();
 
         assertThat(result.url()).isNull();
         assertThat(result.primaryKey()).isEqualTo("abc-123");
@@ -228,59 +281,61 @@ class AwsServiceTest {
         verify(amazonS3, never()).putObject(anyString(), anyString(), any(), any(ObjectMetadata.class));
     }
 
-    @Test
-    void uploadFileAsync_returnsAccessDeniedFuture_whenAdminOnlyTable_andNotAdmin() {
-        Part part = mock(Part.class);
-        when(part.getSize()).thenReturn(100L);
-        when(part.getSubmittedFileName()).thenReturn("song song_url abc-123");
-
-        CompletableFuture<FileUploadResult> future = awsService.uploadFileAsync(false, part);
-
-        assertThatThrownBy(future::get)
-                .isInstanceOf(ExecutionException.class)
-                .hasCauseInstanceOf(java.nio.file.AccessDeniedException.class);
-    }
+    // ── save (validates + authorizes every part, then uploads and updates the row) ─────
 
     @Test
-    void uploadFileAsync_returnsFailedFuture_whenSubmittedFileNameMalformed() {
-        Part part = mock(Part.class);
-        when(part.getSize()).thenReturn(100L);
-        when(part.getSubmittedFileName()).thenReturn("only_two_parts");
-
-        CompletableFuture<FileUploadResult> future = awsService.uploadFileAsync(true, part);
-
-        assertThatThrownBy(future::get)
-                .isInstanceOf(ExecutionException.class)
-                .hasCauseInstanceOf(IllegalArgumentException.class);
-    }
-
-    // ── save (orchestrates uploadFileAsync results into DB updates) ───────
-
-    @Test
-    void save_writesUrlsToCorrectTableAndColumn_perResult() throws Exception {
+    void save_writesUrlToAllowListedTarget() throws Exception {
         Part p1 = mock(Part.class);
         when(p1.getSize()).thenReturn(50L);
-        when(p1.getSubmittedFileName()).thenReturn("genre type g-1");
-        when(p1.getContentType()).thenReturn("text/plain");
+        when(p1.getSubmittedFileName()).thenReturn("record cover_url r-1");
+        when(p1.getContentType()).thenReturn("image/png");
         when(p1.getInputStream()).thenReturn(new ByteArrayInputStream(new byte[50]));
-        when(amazonS3.doesObjectExist(BUCKET, "genre/type/g-1")).thenReturn(false);
-        when(amazonS3.getUrl(BUCKET, "genre/type/g-1"))
-                .thenReturn(new URL("https://test-bucket.s3.amazonaws.com/genre/type/g-1"));
+        when(uploadAuthorizer.mayModify(UploadTarget.RECORD_COVER, "r-1", "admin-1", true)).thenReturn(true);
+        when(amazonS3.doesObjectExist(BUCKET, "record/cover_url/r-1")).thenReturn(false);
+        when(amazonS3.getUrl(BUCKET, "record/cover_url/r-1"))
+                .thenReturn(new URL("https://test-bucket.s3.amazonaws.com/record/cover_url/r-1"));
 
-        ResponseEntity<List<FileUploadResult>> result = awsService.save(true, List.of(p1));
+        ResponseEntity<List<FileUploadResult>> result = awsService.save("admin-1", true, List.of(p1));
 
         assertThat(result.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(result.getBody()).hasSize(1);
         verify(jdbcTemplate).update(
-                "UPDATE genre SET type = ? WHERE id = ?",
-                "https://test-bucket.s3.amazonaws.com/genre/type/g-1",
-                "g-1"
+                "UPDATE record SET cover_url = ? WHERE id = ?",
+                "https://test-bucket.s3.amazonaws.com/record/cover_url/r-1",
+                "r-1"
         );
     }
 
     @Test
+    void save_targetOutsideAllowList_isBadRequest_andUploadsNothing() {
+        // Column names are no longer client-controlled: these used to become UPDATE users SET password_hash = <url>.
+        for (String name : List.of("users password_hash u-2", "users role u-1", "genre type g-1", "only_two_parts")) {
+            Part part = mock(Part.class);
+            when(part.getSubmittedFileName()).thenReturn(name);
+
+            assertThat(awsService.save("u-1", false, List.of(part)).getStatusCode())
+                    .as(name).isEqualTo(HttpStatus.BAD_REQUEST);
+        }
+        verifyNoInteractions(jdbcTemplate, amazonS3);
+    }
+
+    @Test
+    void save_anyForbiddenPart_isForbidden_andUploadsNothing() {
+        Part own = mock(Part.class);
+        when(own.getSubmittedFileName()).thenReturn("users profile_url u-1");
+        Part someoneElses = mock(Part.class);
+        when(someoneElses.getSubmittedFileName()).thenReturn("users profile_url u-2");
+        when(uploadAuthorizer.mayModify(UploadTarget.USER_AVATAR, "u-1", "u-1", false)).thenReturn(true);
+        when(uploadAuthorizer.mayModify(UploadTarget.USER_AVATAR, "u-2", "u-1", false)).thenReturn(false);
+
+        assertThat(awsService.save("u-1", false, List.of(own, someoneElses)).getStatusCode())
+                .isEqualTo(HttpStatus.FORBIDDEN);
+        verifyNoInteractions(jdbcTemplate, amazonS3);
+    }
+
+    @Test
     void save_returnsOk_withEmptyResults_whenNoPartsSubmitted() {
-        ResponseEntity<List<FileUploadResult>> result = awsService.save(true, List.of());
+        ResponseEntity<List<FileUploadResult>> result = awsService.save("u-1", true, List.of());
 
         assertThat(result.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(result.getBody()).isEmpty();
