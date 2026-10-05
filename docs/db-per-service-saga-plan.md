@@ -1,6 +1,6 @@
 # Database-per-service + Choreography SAGA — Plan
 
-Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–4 done.
+Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–5 done (reseed left to you); Phase 6 (user deletion) next.
 
 ## Why
 
@@ -220,12 +220,21 @@ record, which now also clears it from everyone's playlists and history).
 
 ### Phase 5 — physical split
 
-- [ ] `docker/mysql/init.sql`: 4 schemas + 4 users with per-schema grants
-- [ ] Per-service datasource URL / user / password in config-server and `env.properties`
-- [ ] `compose.yaml` mounts the init script, passes per-service credentials
-- [ ] `cadence-seed` writes to 4 schemas, fills `user_replica`, follows into `catalog_db`, `users.status='ACTIVE'`; README diagram updated
-- [ ] Drop `cadenceDB`, reseed
-- [ ] Verify a cross-schema query (catalog → `auth_db.users`) fails with a permission error
+- [x] `docker/mysql/init/01-service-schemas.sh`: 4 schemas + 4 users (`auth_svc`, …), each granted only its own schema;
+  a shell script (not .sql) so passwords come from the mysql container's environment; idempotent, so it can also be
+  run by hand on an existing volume. `.gitattributes` keeps `*.sh` LF so it runs in the Linux container.
+- [x] Per-service `DATASOURCE_URL` / `DATASOURCE_USERNAME` / `DATASOURCE_PASSWORD` in `compose.yaml` (dev defaults,
+  overridable via `.env`); config-server already read `${DATASOURCE_*}`, so no service config changed.
+  `env.properties` is only for running a service outside Docker (README explains which schema/user to use).
+- [x] `compose.yaml` mounts the init script; `MYSQL_DATABASE: cadenceDB` removed
+- [x] `cadence-seed`: connects as admin, schema-qualifies every table, fills `user_replica`, users `ACTIVE`,
+  truncates each schema's `outbox` / `processed_events` too; README updated
+- [x] Verified: cross-schema access fails with a permission error (catalog_svc → `auth_db.users`: `SELECT command
+  denied`; playlist_svc → `streaming_db`: `Access denied`); each service connects only as its own user; registration
+  works across the split (auth_db → playlist_db → catalog_db)
+- [x] Seed checked against the live schemas (every INSERT column exists, no required column omitted); running it is left to you, since it calls Deezer/Jamendo and uploads to S3: `cd cadence-seed && node seed.js`
+- [x] `cadenceDB` dropped (2026-10-05)
+- [x] Init script verified on a fresh MySQL volume (runs automatically, isolation holds)
 
 ### Phase 6 — Saga D (user deletion)
 

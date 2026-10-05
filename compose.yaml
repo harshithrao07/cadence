@@ -5,13 +5,19 @@ services:
     ports:
       - "3306:3306"
     environment:
-      MYSQL_DATABASE: cadenceDB
       MYSQL_ROOT_PASSWORD: password
+      # Per-service database users (docker/mysql/init/01-service-schemas.sh). Defaults are for local development;
+      # override them in a .env file next to compose.yaml.
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:-auth_dev_password}
+      CATALOG_DB_PASSWORD: ${CATALOG_DB_PASSWORD:-catalog_dev_password}
+      PLAYLIST_DB_PASSWORD: ${PLAYLIST_DB_PASSWORD:-playlist_dev_password}
+      STREAMING_DB_PASSWORD: ${STREAMING_DB_PASSWORD:-streaming_dev_password}
     command:
       - "--character-set-server=utf8mb4"
       - "--collation-server=utf8mb4_unicode_ci"
     volumes:
       - cadence-mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-ppassword"]
       interval: 10s
@@ -86,7 +92,9 @@ services:
       SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
-      DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      DATASOURCE_URL: jdbc:mysql://mysql:3306/auth_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      DATASOURCE_USERNAME: auth_svc
+      DATASOURCE_PASSWORD: ${AUTH_DB_PASSWORD:-auth_dev_password}
       KAFKA_URL: kafka:29092
     depends_on:
       mysql:
@@ -109,7 +117,9 @@ services:
       SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
-      DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      DATASOURCE_URL: jdbc:mysql://mysql:3306/catalog_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      DATASOURCE_USERNAME: catalog_svc
+      DATASOURCE_PASSWORD: ${CATALOG_DB_PASSWORD:-catalog_dev_password}
       KAFKA_URL: kafka:29092
     depends_on:
       mysql:
@@ -132,7 +142,9 @@ services:
       SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
-      DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      DATASOURCE_URL: jdbc:mysql://mysql:3306/playlist_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      DATASOURCE_USERNAME: playlist_svc
+      DATASOURCE_PASSWORD: ${PLAYLIST_DB_PASSWORD:-playlist_dev_password}
       KAFKA_URL: kafka:29092
     depends_on:
       mysql:
@@ -155,7 +167,9 @@ services:
       SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
-      DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      DATASOURCE_URL: jdbc:mysql://mysql:3306/streaming_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      DATASOURCE_USERNAME: streaming_svc
+      DATASOURCE_PASSWORD: ${STREAMING_DB_PASSWORD:-streaming_dev_password}
       KAFKA_URL: kafka:29092
     depends_on:
       mysql:

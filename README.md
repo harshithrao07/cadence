@@ -56,7 +56,7 @@ Useful local URLs:
 | Eureka dashboard | `http://localhost:8761` | See which services have registered |
 | Config Server | `http://localhost:8888` | `GET /<service>/<profile>` to inspect served config |
 | Kafka broker | `localhost:9092` | KRaft, single broker, no Zookeeper |
-| MySQL | `localhost:3306` | DB `cadenceDB`, user `root`, password `password` |
+| MySQL | `localhost:3306` | One schema per service (`auth_db`, `catalog_db`, `playlist_db`, `streaming_db`), each with its own user (`auth_svc`, …; dev passwords in `compose.yaml`). Admin: `root` / `password` |
 
 ### Running locally without Docker
 
@@ -64,9 +64,13 @@ For active development on a single service (faster reload, easier debugging), yo
 
 ```bash
 docker compose stop auth-service
-./mvnw -pl cadence-events install             # once, and again after changing event contracts
-(cd auth-service && ./mvnw spring-boot:run)   # uses env.properties for secrets
+./mvnw -pl cadence-messaging -am install -DskipTests   # once, and again after changing cadence-events / cadence-messaging
+(cd auth-service && ./mvnw spring-boot:run)            # uses env.properties for secrets
 ```
+
+A locally run service needs its own schema and user in `env.properties` (e.g. for auth-service
+`DATASOURCE_URL=jdbc:mysql://localhost:3306/auth_db?...`, `DATASOURCE_USERNAME=auth_svc`,
+`DATASOURCE_PASSWORD=auth_dev_password`); in Docker, compose sets these per service.
 
 Your local instance registers with the dockerized Eureka and fetches config from the dockerized config-server.
 
@@ -244,9 +248,11 @@ flowchart LR
 JWT_SECRET_KEY=replace-with-strong-secret-at-least-32-bytes
 GATEWAY_SECRET=any-shared-secret
 
-DATASOURCE_URL=jdbc:mysql://localhost:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
-DATASOURCE_USERNAME=root
-DATASOURCE_PASSWORD=password
+# Only used when running a service outside Docker — point it at that service's schema/user
+# (compose overrides these per container).
+DATASOURCE_URL=jdbc:mysql://localhost:3306/auth_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+DATASOURCE_USERNAME=auth_svc
+DATASOURCE_PASSWORD=auth_dev_password
 
 FRONTEND_URL=http://localhost:5173
 BACKEND_URL=http://localhost:8080
@@ -348,7 +354,22 @@ Endpoint-level detail lives in each service's README.
 
 ## Persistence Model
 
-Each service owns its tables and reads no other service's tables: data owned elsewhere comes from Feign calls or from event-fed replicas (catalog's `user_replica`). See each service README for ownership boundaries.
+**Database per service.** One MySQL server, one schema per service, and one MySQL user per service that is granted
+only its own schema, so cross-service SQL fails with a permission error:
+
+| Service | Schema | User |
+|---|---|---|
+| auth-service | `auth_db` | `auth_svc` |
+| catalog-service | `catalog_db` | `catalog_svc` |
+| playlist-service | `playlist_db` | `playlist_svc` |
+| streaming-service | `streaming_db` | `streaming_svc` |
+
+`docker/mysql/init/01-service-schemas.sh` creates them on the first start of an empty MySQL volume. For an existing
+volume, run it once: `docker compose exec mysql sh /docker-entrypoint-initdb.d/01-service-schemas.sh` (from Git Bash
+on Windows, prefix `MSYS_NO_PATHCONV=1`). Data owned by another service comes from Feign calls or event-fed replicas
+(catalog's `user_replica`). Moving a service to its own MySQL server is a config change (its `DATASOURCE_*`).
+
+The ER diagram below predates the split; tables are now grouped by the schemas above.
 
 ![Cadence ER Diagram](assets/cadenceDB.png)
 
