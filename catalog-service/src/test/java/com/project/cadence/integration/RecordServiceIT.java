@@ -1,5 +1,10 @@
 package com.project.cadence.integration;
 
+import com.cadence.events.SongsDeletedEvent;
+import com.cadence.events.Topics;
+import com.cadence.messaging.EventCodec;
+import jakarta.persistence.EntityManager;
+
 import com.amazonaws.HttpMethod;
 import com.project.cadence.dto.ApiResponseDTO;
 import com.project.cadence.dto.record.UpsertRecordDTO;
@@ -9,6 +14,7 @@ import com.project.cadence.model.Artist;
 import com.project.cadence.model.Genre;
 import com.project.cadence.model.Record;
 import com.project.cadence.model.RecordType;
+import com.project.cadence.model.Song;
 import com.project.cadence.repository.ArtistRepository;
 import com.project.cadence.repository.GenreRepository;
 import com.project.cadence.repository.RecordRepository;
@@ -44,6 +50,9 @@ class RecordServiceIT extends BaseIntegrationTest {
     @Autowired JdbcTemplate jdbcTemplate;
 
     @MockBean AwsService awsService;
+    @Autowired EventCodec codec;
+    @Autowired EntityManager entityManager;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     private Artist drake;
     private Artist kendrick;
@@ -185,11 +194,36 @@ class RecordServiceIT extends BaseIntegrationTest {
                 .containsExactlyInAnyOrder("Drake", "Kendrick");
         assertThat(reloaded.getSongs()).extracting("title")
                 .containsExactlyInAnyOrder("New Song A", "New Song B");
+
+        // "Old Song" was dropped by the edit (orphanRemoval): other services are told to forget it.
+        assertThat(songsDeletedEvents(recordId)).singleElement()
+                .satisfies(e -> assertThat(e.songIds()).hasSize(1).doesNotContainAnyElementsOf(
+                        reloaded.getSongs().stream().map(Song::getId).toList()));
     }
 
     @Test
     @Transactional
-    void deleteRecord_removesRecord_andDeletesS3Objects() {
+    void upsertNewRecord_editKeepingAllSongs_publishesNoSongsDeleted() {
+        UpsertRecordDTO create = new UpsertRecordDTO(
+                Optional.empty(), "Keep", 1L, RecordType.SINGLE,
+                List.of(drake.getId()),
+                List.of(new UpsertSongDTO(Optional.empty(), "Stays", Set.of(hipHop.getId()), List.of(drake.getId()), 100))
+        );
+        String recordId = recordService.upsertNewRecord(create).getBody().data().id();
+        String songId = recordRepository.findById(recordId).orElseThrow().getSongs().get(0).getId();
+
+        recordService.upsertNewRecord(new UpsertRecordDTO(
+                Optional.of(recordId), "Keep (renamed)", 1L, RecordType.SINGLE,
+                List.of(drake.getId()),
+                List.of(new UpsertSongDTO(Optional.of(songId), "Stays", Set.of(hipHop.getId()), List.of(drake.getId()), 100))
+        ));
+
+        assertThat(songsDeletedEvents(recordId)).isEmpty();
+    }
+
+    /** Not @Transactional: S3 objects are deleted only after the delete commits. */
+    @Test
+    void deleteRecord_removesRecord_publishesSongsDeleted_andDeletesS3ObjectsAfterCommit() {
         UpsertRecordDTO create = new UpsertRecordDTO(
                 Optional.empty(), "Disposable", 1L, RecordType.SINGLE,
                 List.of(drake.getId()),
@@ -197,10 +231,13 @@ class RecordServiceIT extends BaseIntegrationTest {
         );
         String recordId = recordService.upsertNewRecord(create).getBody().data().id();
 
-        Record record = recordRepository.findById(recordId).orElseThrow();
-        record.getSongs().forEach(s -> s.setSongUrl("https://cdn.test/song/song_url/" + s.getId()));
-        record.setCoverUrl("https://cdn.test/record/cover/" + recordId);
-        recordRepository.save(record);
+        // Committed setup (this test has no surrounding transaction).
+        new org.springframework.transaction.support.TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            Record record = recordRepository.findById(recordId).orElseThrow();
+            record.getSongs().forEach(s -> s.setSongUrl("https://cdn.test/song/song_url/" + s.getId()));
+            record.setCoverUrl("https://cdn.test/record/cover/" + recordId);
+            recordRepository.save(record);
+        });
 
         when(awsService.extractKeyFromUrl(anyString())).thenAnswer(inv -> {
             String url = inv.getArgument(0);
@@ -213,6 +250,38 @@ class RecordServiceIT extends BaseIntegrationTest {
         assertThat(recordRepository.findById(recordId)).isEmpty();
         verify(awsService, times(1)).deleteObject("record/cover/" + recordId);
         verify(awsService, times(1)).deleteObject(org.mockito.ArgumentMatchers.startsWith("song/song_url/"));
+        assertThat(songsDeletedEvents(recordId)).singleElement()
+                .satisfies(e -> assertThat(e.songIds()).hasSize(1));
+    }
+
+    @Test
+    @Transactional
+    void deleteRecord_thatNeverCommits_leavesS3ObjectsAlone() {
+        UpsertRecordDTO create = new UpsertRecordDTO(
+                Optional.empty(), "RolledBack", 1L, RecordType.SINGLE,
+                List.of(drake.getId()),
+                List.of(new UpsertSongDTO(Optional.empty(), "OneSong", Set.of(hipHop.getId()), List.of(drake.getId()), 100))
+        );
+        String recordId = recordService.upsertNewRecord(create).getBody().data().id();
+        Record record = recordRepository.findById(recordId).orElseThrow();
+        record.setCoverUrl("https://cdn.test/record/cover/" + recordId);
+        when(awsService.extractKeyFromUrl(anyString())).thenReturn("record/cover/" + recordId);
+
+        recordService.deleteRecord(recordId);
+
+        // The test transaction is rolled back, so the record survives and so must its files.
+        verify(awsService, never()).deleteObject(anyString());
+    }
+
+    private List<SongsDeletedEvent> songsDeletedEvents(String recordId) {
+        return new org.springframework.transaction.support.TransactionTemplate(transactionManager).execute(tx -> entityManager
+                .createQuery("SELECT e.payload FROM OutboxEvent e WHERE e.topic = :topic AND e.aggregateId = :id", String.class)
+                .setParameter("topic", Topics.SONGS_DELETED_TOPIC)
+                .setParameter("id", recordId)
+                .getResultList()
+                .stream()
+                .map(payload -> codec.decode(payload, SongsDeletedEvent.class).payload())
+                .toList());
     }
 
     @Test

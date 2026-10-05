@@ -18,4 +18,12 @@ public class KafkaConfig {
                 .replicas(1)
                 .build();
     }
+
+    @Bean
+    public NewTopic songsDeletedTopic() {
+        return TopicBuilder.name(Topics.SONGS_DELETED_TOPIC)
+                .partitions(3)
+                .replicas(1)
+                .build();
+    }
 }

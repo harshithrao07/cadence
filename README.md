@@ -281,6 +281,7 @@ Topics are auto-created by the producer on first send (`spring.kafka.admin.auto-
 | `auth.email-verification` | `auth-service.EmailVerificationProducer` | `notification-service.EmailVerificationConsumer` | Sign-up triggers a verification email send. |
 | `catalog.record-created` | `catalog-service.RecordCreatedProducer` | `notification-service.RecordCreatedConsumer` | New record uploaded → notification-service emails followers of all participating artists. |
 | `auth.user-updated` | `auth-service.UserUpdatedProducer` | `catalog-service.UserUpdatedConsumer` | User created or profile changed → catalog upserts its `user_replica`. |
+| `catalog.songs-deleted` | `catalog-service.SongsDeletedProducer` | `playlist-service.SongsDeletedConsumer`, `streaming-service.SongsDeletedConsumer` | Record deleted, or songs dropped from a record → playlists and play history forget those song ids. |
 | `catalog.media-updated` | `catalog-service.MediaTargetWriter` | `auth-service.MediaUpdatedConsumer`, `playlist-service.MediaUpdatedConsumer` | Avatar / playlist cover stored or removed → the owning service updates its row after re-checking ownership. |
 
 Event classes and topic names live in [cadence-events](cadence-events/); topics are named `<producing-service>.<event>`.

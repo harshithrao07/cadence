@@ -1,6 +1,6 @@
 # Database-per-service + Choreography SAGA — Plan
 
-Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–3 done.
+Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–4 done.
 
 ## Why
 
@@ -65,8 +65,8 @@ Every event is wrapped in an envelope: `eventId` (UUID), `sagaId`, `type`, `vers
 | `user.updated` | auth | catalog | Replica update |
 | `user.deletion-requested` | auth | playlist, catalog, streaming | Saga D |
 | `user.data-purged` | playlist, catalog, streaming | auth | Saga D confirmations |
-| `catalog.record-deleted` / `catalog.artist-deleted` | catalog | playlist, streaming | Saga B (carries `songIds`) |
-| `catalog.songs-purged` | playlist, streaming | catalog | Saga B confirmations |
+| `catalog.songs-deleted` | catalog | playlist, streaming | Saga B: songs deleted (record delete or edit), `{recordId, songIds}` |
+| ~~`catalog.record-deleted` / `catalog.artist-deleted` / `catalog.songs-purged`~~ | | | Dropped in Phase 4: forward-only cleanup, no confirmations; artist deletes are local |
 | ~~`auth.user-created`~~ | | | Replaced by `auth.user-registered` in Phase 3 |
 | `auth.user-updated` | auth | catalog | User snapshot → `user_replica`; published on activation and profile changes |
 | `catalog.media-updated` | catalog | auth, playlist | Phase 2: avatar / playlist cover stored or removed |
@@ -90,16 +90,17 @@ auth: create user (PENDING) + outbox auth.user-registered
 - Login / JWT refused unless `ACTIVE`. Both email signup and OAuth.
 - Timeout sweeper: `PENDING` older than 5 minutes → `FAILED`.
 
-### Saga B — artist / record delete
+### Saga B — song deletion (as built in Phase 4)
 
 ```
-catalog: status=DELETING (hidden from reads) + outbox record-deleted/artist-deleted {songIds}
-  → playlist: remove songIds from playlist_songs  → songs-purged
-  → streaming: delete play_history for songIds     → songs-purged
-  → catalog: both acks → hard delete rows, join tables, follows (artist), S3 objects
+catalog: delete record, or edit a record dropping songs (orphanRemoval) + outbox catalog.songs-deleted {recordId, songIds}
+  → playlist:  remove the ids from every playlist (through the entity, so song_order stays gap-free)
+  → streaming: delete play_history rows for the ids
+catalog: S3 objects of a deleted record are removed after the delete commits
 ```
 
-Forward-only: consumers retry until they succeed; poison messages go to the DLT.
+Forward-only: nothing to compensate; consumers are idempotent and retry, then dead-letter. No confirmations: reads
+already skip songs catalog no longer has, so leftover ids are invisible until purged (~1 s).
 
 ### Saga C — profile replication
 
@@ -193,12 +194,29 @@ Decisions made while implementing:
 - **Kafka metadata refresh lowered to 30 s** (`spring.kafka.properties.metadata.max.age.ms`, global config): a topic
   grown to 3 partitions by a `NewTopic` bean went unnoticed by an already-running consumer for up to 5 minutes.
 
-### Phase 4 — Saga B (catalog deletes)
+### Phase 4 — Saga B (song deletion)
 
-- [ ] `status` (`ACTIVE`/`DELETING`) on `artist`, `record`, `song`; all reads filter `ACTIVE`
-- [ ] Delete → `DELETING` + `record-deleted` / `artist-deleted`
-- [ ] playlist + streaming purge and ack with `songs-purged`
-- [ ] `pending_deletions` tracks acks → hard delete + S3 cleanup
+Re-decided at the start of the phase: **hard delete + cleanup event** instead of the planned soft delete. Every read
+that shows songs (playlist contents, discover, trending, history) already resolves ids through catalog's database and
+skips missing ones, so a deleted song disappears immediately; soft delete would have meant a status filter on every
+catalog query plus confirmation tracking, for a state nothing reads.
+
+- [x] `catalog.songs-deleted {recordId, songIds}` from `deleteRecord` **and** from record edits that drop songs
+  (found while implementing: `upsertNewRecord` replaces the song list and orphanRemoval silently deleted songs)
+- [x] playlist-service `SongsDeletedConsumer`: removes ids from all playlists incl. Liked Songs, re-numbering `song_order`
+- [x] streaming-service `SongsDeletedConsumer`: deletes `play_history` for the ids; streaming joins cadence-messaging
+  (root-context Docker build, Kafka config, `KAFKA_URL` in compose)
+- [x] `deleteRecord` deletes S3 objects only after commit (previously mid-transaction, so a rollback lost files)
+- [x] Artist deletes stay local: since Phase 2 everything they touch (`artist_records`, `artist_created_songs`,
+  `artist_following`) is catalog's, and no other service stores artist ids
+
+- Found by the tests: removing several songs from an `@OrderColumn` list in place made Hibernate shift rows one
+  UPDATE at a time, briefly duplicating a `(playlist_id, song_id)` pair (unique constraint). The purge replaces the
+  list instead, so Hibernate deletes and re-inserts the rows.
+
+Not done: audio files of songs dropped by an edit are still left in S3 (pre-existing; no code path deletes them).
+Flagged separately: catalog's record/artist write endpoints have no admin check (any logged-in user can delete a
+record, which now also clears it from everyone's playlists and history).
 
 ### Phase 5 — physical split
 

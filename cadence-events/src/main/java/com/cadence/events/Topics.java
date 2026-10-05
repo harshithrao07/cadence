@@ -13,6 +13,7 @@ public final class Topics {
     public static final String USER_UPDATED_TOPIC = "auth.user-updated";
     public static final String RECORD_CREATED_TOPIC = "catalog.record-created";
     public static final String MEDIA_UPDATED_TOPIC = "catalog.media-updated";
+    public static final String SONGS_DELETED_TOPIC = "catalog.songs-deleted";
     public static final String LIKED_SONGS_CREATED_TOPIC = "playlist.liked-songs-created";
     public static final String LIKED_SONGS_FAILED_TOPIC = "playlist.liked-songs-failed";
 

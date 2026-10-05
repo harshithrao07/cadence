@@ -112,7 +112,14 @@ Single table, composite `@EmbeddedId` of `(user_id, song_id)`. Indexes:
 
 ## Eventing
 
-This service does not produce or consume Kafka events. Plays are recorded synchronously via HTTP — there's no benefit to going async because the call is on the critical path of the audio player anyway.
+Plays are recorded synchronously via HTTP — there's no benefit to going async because the call is on the critical
+path of the audio player anyway.
+
+| Direction | Topic | Handler | Effect |
+|---|---|---|---|
+| Consumes | `catalog.songs-deleted` | `SongsDeletedConsumer` | Deletes `play_history` rows of songs catalog-service deleted, so they stop taking trending / top-song slots |
+
+Consumption goes through cadence-messaging (envelope decoding, idempotent `processed_events`, retries then DLT).
 
 ## Cross-Cutting Concerns
 

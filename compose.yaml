@@ -146,7 +146,8 @@ services:
 
   streaming-service:
     build:
-      context: ./streaming-service
+      context: .
+      dockerfile: streaming-service/Dockerfile
     container_name: cadence-streaming
     env_file:
       - env.properties
@@ -155,8 +156,11 @@ services:
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
       DATASOURCE_URL: jdbc:mysql://mysql:3306/cadenceDB?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      KAFKA_URL: kafka:29092
     depends_on:
       mysql:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
       discovery-service:
         condition: service_healthy

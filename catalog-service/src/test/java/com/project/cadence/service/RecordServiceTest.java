@@ -6,6 +6,7 @@ import com.project.cadence.model.Artist;
 import com.project.cadence.model.Record;
 import com.project.cadence.model.RecordType;
 import com.project.cadence.producers.RecordCreatedProducer;
+import com.project.cadence.producers.SongsDeletedProducer;
 import com.project.cadence.repository.ArtistRepository;
 import com.project.cadence.repository.GenreRepository;
 import com.project.cadence.repository.RecordRepository;
@@ -37,6 +38,7 @@ class RecordServiceTest {
     @Mock private SongRepository songRepository;
     @Mock private AwsService awsService;
     @Mock private RecordCreatedProducer producer;
+    @Mock private SongsDeletedProducer songsDeletedProducer;
     @Mock private NamedParameterJdbcTemplate namedParameterJdbcTemplate;
 
     @InjectMocks
@@ -80,6 +82,7 @@ class RecordServiceTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody().success()).isTrue();
         verify(recordRepository).delete(r);
+        verify(songsDeletedProducer).send(RECORD_ID, r.getSongs().stream().map(com.project.cadence.model.Song::getId).toList());
     }
 
     // ── getAllRecordsByArtistId ────────────────────────────────────────────────
