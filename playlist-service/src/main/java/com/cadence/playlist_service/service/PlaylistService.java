@@ -199,15 +199,18 @@ public class PlaylistService {
         }
     }
 
+    /**
+     * Idempotent: returns the id of the user's Liked Songs playlist, creating it if needed (null for a blank userId).
+     */
     @Transactional
-    public void createLikedSongsPlaylistForUser(String userId) {
+    public String createLikedSongsPlaylistForUser(String userId) {
         if (userId == null || userId.isBlank()) {
-            return;
+            return null;
         }
 
         String playlistId = SystemPlaylistType.LIKED_SONGS.name() + "_" + userId;
         if (playlistRepository.existsById(playlistId)) {
-            return;
+            return playlistId;
         }
 
         Playlist likedSongs = Playlist.builder()
@@ -219,6 +222,7 @@ public class PlaylistService {
                 .build();
 
         playlistRepository.save(likedSongs);
+        return playlistId;
     }
 
     public ResponseEntity<ApiResponseDTO<PlaylistPreviewDTO>> getPlaylist(String userId, String playlistId) {

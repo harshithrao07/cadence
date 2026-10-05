@@ -406,7 +406,7 @@ class PlaylistServiceTest {
         String expectedId = SystemPlaylistType.LIKED_SONGS.name() + "_" + USER_ID;
         when(playlistRepository.existsById(expectedId)).thenReturn(false);
 
-        playlistService.createLikedSongsPlaylistForUser(USER_ID);
+        assertThat(playlistService.createLikedSongsPlaylistForUser(USER_ID)).isEqualTo(expectedId);
 
         verify(playlistRepository).save(argThat(p ->
                 p.isSystem() &&
@@ -421,7 +421,7 @@ class PlaylistServiceTest {
         String expectedId = SystemPlaylistType.LIKED_SONGS.name() + "_" + USER_ID;
         when(playlistRepository.existsById(expectedId)).thenReturn(true);
 
-        playlistService.createLikedSongsPlaylistForUser(USER_ID);
+        assertThat(playlistService.createLikedSongsPlaylistForUser(USER_ID)).isEqualTo(expectedId);
 
         verify(playlistRepository, never()).save(any());
     }

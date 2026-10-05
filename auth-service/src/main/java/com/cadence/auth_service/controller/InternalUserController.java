@@ -3,6 +3,7 @@ package com.cadence.auth_service.controller;
 import com.cadence.auth_service.dto.user.UserPreviewDTO;
 import com.cadence.auth_service.dto.user.UserIdentityDTO;
 import com.cadence.auth_service.model.User;
+import com.cadence.auth_service.model.UserStatus;
 import com.cadence.auth_service.producers.UserUpdatedProducer;
 import com.cadence.auth_service.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -38,14 +39,14 @@ public class InternalUserController {
     }
 
     /**
-     * Republishes every user's snapshot, e.g. to (re)build catalog's user_replica. Safe to repeat: replicas upsert.
+     * Republishes every ACTIVE user's snapshot, e.g. to (re)build catalog's user_replica. Safe to repeat: replicas upsert.
      * Not routed by the gateway: call it from inside the network, e.g.
      * {@code docker exec cadence-auth curl -X POST localhost:8085/internal/users/republish}.
      */
     @PostMapping("/users/republish")
     @Transactional
     public ResponseEntity<Map<String, Integer>> republishUsers() {
-        List<User> users = userRepository.findAll();
+        List<User> users = userRepository.findAllByStatus(UserStatus.ACTIVE);
         users.forEach(userUpdatedProducer::send);
         return ResponseEntity.ok(Map.of("republished", users.size()));
     }

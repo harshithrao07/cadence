@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Button } from "@material-tailwind/react";
@@ -19,6 +19,16 @@ const Login = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const router = useRouter();
+
+  // Google sign-in redirects here when the new account isn't ready yet (registration saga).
+  useEffect(() => {
+    const error = new URLSearchParams(window.location.search).get("error");
+    if (error === "account_setup_pending") {
+      toast.info("Your account is being set up. Please sign in again in a moment.");
+    } else if (error === "account_setup_failed") {
+      toast.error("We couldn't finish setting up your account. Please try again.");
+    }
+  }, []);
 
   const handleChange = (event) => {
     const { name, value } = event.target;

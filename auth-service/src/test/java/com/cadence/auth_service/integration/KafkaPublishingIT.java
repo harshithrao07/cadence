@@ -7,7 +7,7 @@ import com.cadence.auth_service.service.AuthenticationService;
 import com.cadence.events.EmailVerificationEvent;
 import com.cadence.events.EventEnvelope;
 import com.cadence.events.Topics;
-import com.cadence.events.UserCreatedEvent;
+import com.cadence.events.UserRegisteredEvent;
 import com.cadence.messaging.EventCodec;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -46,7 +46,7 @@ class KafkaPublishingIT extends BaseIntegrationTest {
     void setUp() {
         userRepository.deleteAll();
 
-        userConsumer = newConsumer(Topics.USER_CREATED_TOPIC);
+        userConsumer = newConsumer(Topics.USER_REGISTERED_TOPIC);
         emailConsumer = newConsumer(Topics.EMAIL_VERIFICATION_TOPIC);
     }
 
@@ -57,17 +57,17 @@ class KafkaPublishingIT extends BaseIntegrationTest {
     }
 
     @Test
-    void register_relaysUserCreatedEvent_withSavedUserId() {
+    void register_relaysUserRegisteredEvent_withSavedUserId() {
         authenticationService.register(new RegisterRequestDTO("Alice", "alice@example.com", "StrongPass1!"));
 
         String savedUserId = userRepository.findByEmail("alice@example.com").orElseThrow().getId();
 
         ConsumerRecord<String, String> received = pollForKey(userConsumer, savedUserId, Duration.ofSeconds(15));
-        assertThat(received).as("expected one message on %s", Topics.USER_CREATED_TOPIC).isNotNull();
+        assertThat(received).as("expected one message on %s", Topics.USER_REGISTERED_TOPIC).isNotNull();
         assertThat(received.key()).isEqualTo(savedUserId);
 
-        EventEnvelope<UserCreatedEvent> envelope = codec.decode(received.value(), UserCreatedEvent.class);
-        assertThat(envelope.type()).isEqualTo("UserCreatedEvent");
+        EventEnvelope<UserRegisteredEvent> envelope = codec.decode(received.value(), UserRegisteredEvent.class);
+        assertThat(envelope.type()).isEqualTo("UserRegisteredEvent");
         assertThat(envelope.sagaId()).isNotNull();
         assertThat(envelope.payload().userId()).isEqualTo(savedUserId);
     }

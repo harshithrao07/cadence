@@ -48,6 +48,19 @@ class JwtAuthenticationProviderTest {
     }
 
     @Test
+    void authenticate_rejectsTokens_ofAccountsThatAreNotActive() {
+        when(jwtUtil.validateAndExtractUsername("pending-token")).thenReturn("pending@example.com");
+        UserDetails pending = com.cadence.auth_service.model.User.builder()
+                .email("pending@example.com")
+                .status(com.cadence.auth_service.model.UserStatus.PENDING)
+                .build();
+        when(userDetailsService.loadUserByUsername("pending@example.com")).thenReturn(pending);
+
+        assertThatThrownBy(() -> provider.authenticate(new JwtAuthenticationToken("pending-token")))
+                .isInstanceOf(org.springframework.security.authentication.DisabledException.class);
+    }
+
+    @Test
     void authenticate_throwsBadCredentials_whenJwtUtilReturnsNull() {
         when(jwtUtil.validateAndExtractUsername("bad-token")).thenReturn(null);
 

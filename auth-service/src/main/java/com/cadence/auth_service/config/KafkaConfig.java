@@ -12,8 +12,16 @@ import org.springframework.kafka.config.TopicBuilder;
 public class KafkaConfig {
 
     @Bean
-    public NewTopic userCreatedTopic() {
-        return TopicBuilder.name(Topics.USER_CREATED_TOPIC)
+    public NewTopic userRegisteredTopic() {
+        return TopicBuilder.name(Topics.USER_REGISTERED_TOPIC)
+                .partitions(3)
+                .replicas(1)
+                .build();
+    }
+
+    @Bean
+    public NewTopic userUpdatedTopic() {
+        return TopicBuilder.name(Topics.USER_UPDATED_TOPIC)
                 .partitions(3)
                 .replicas(1)
                 .build();

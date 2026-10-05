@@ -1,6 +1,6 @@
 # Database-per-service + Choreography SAGA — Plan
 
-Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–2 done.
+Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–3 done.
 
 ## Why
 
@@ -58,17 +58,17 @@ Every event is wrapped in an envelope: `eventId` (UUID), `sagaId`, `type`, `vers
 
 | Topic | Producer | Consumers | Purpose |
 |---|---|---|---|
-| `user.registered` | auth | playlist | Saga A step 1 |
+| `auth.user-registered` | auth | playlist | Saga A step 1 |
 | `playlist.liked-songs-created` | playlist | auth | Saga A success |
 | `playlist.liked-songs-failed` | playlist | auth | Saga A compensation |
-| `user.activated` | auth | catalog, notification | Replica insert; verify / welcome mail |
+| ~~`user.activated`~~ | | | Not needed: activation publishes `auth.user-updated` (replica insert); email verification stays user-triggered |
 | `user.updated` | auth | catalog | Replica update |
 | `user.deletion-requested` | auth | playlist, catalog, streaming | Saga D |
 | `user.data-purged` | playlist, catalog, streaming | auth | Saga D confirmations |
 | `catalog.record-deleted` / `catalog.artist-deleted` | catalog | playlist, streaming | Saga B (carries `songIds`) |
 | `catalog.songs-purged` | playlist, streaming | catalog | Saga B confirmations |
-| `auth.user-created` | auth | playlist | Existing flow on the outbox; replaced by `user.registered` in Phase 3 |
-| `auth.user-updated` | auth | catalog | Phase 2: user snapshot → `user_replica` (published on creation until Phase 3 moves it to activation) |
+| ~~`auth.user-created`~~ | | | Replaced by `auth.user-registered` in Phase 3 |
+| `auth.user-updated` | auth | catalog | User snapshot → `user_replica`; published on activation and profile changes |
 | `catalog.media-updated` | catalog | auth, playlist | Phase 2: avatar / playlist cover stored or removed |
 | `auth.email-verification` | auth | notification | Existing flow, moved onto the outbox |
 | `catalog.record-created` | catalog | notification | Existing flow, moved onto the outbox |
@@ -80,9 +80,9 @@ Every topic gets a `.DLT` dead-letter topic.
 ### Saga A — registration
 
 ```
-auth: create user (PENDING) + outbox user.registered
-  → playlist: create "Liked Songs" (idempotent) + outbox liked-songs-created | liked-songs-failed
-  → auth: user ACTIVE + outbox user.activated   | user FAILED (compensation)
+auth: create user (PENDING) + outbox auth.user-registered
+  → playlist: create "Liked Songs" (idempotent) + outbox playlist.liked-songs-created | playlist.liked-songs-failed
+  → auth: user ACTIVE + outbox auth.user-updated   | user FAILED (compensation)
        → catalog: insert user_replica
        → notification: verification / welcome mail
 ```
@@ -174,11 +174,24 @@ unauthorized writes; fixed first in its own commit (`UploadTarget` allow-list + 
 
 ### Phase 3 — Saga A (registration)
 
-- [ ] `users.status`; email signup + OAuth create `PENDING` and emit `user.registered`
-- [ ] playlist creates Liked Songs idempotently, replies success / failure
-- [ ] auth activates or fails the user; emits `user.activated`
-- [ ] Login / JWT gated on `ACTIVE`; frontend "setting up your account" state
-- [ ] Timeout sweeper
+- [x] `users.status` (`PENDING` / `ACTIVE` / `FAILED`, existing rows default `ACTIVE`) + `registered_at`; email signup and OAuth start the saga with `auth.user-registered`
+- [x] playlist creates Liked Songs idempotently and replies `playlist.liked-songs-created` (same sagaId) or `playlist.liked-songs-failed` (invalid request)
+- [x] auth activates (and publishes `auth.user-updated`, so the replica only holds active users) or fails the user; a late success still activates
+- [x] Only `ACTIVE` users get tokens: password login and Google sign-in check status; `User.isEnabled()` gates token refresh
+- [x] `RegistrationTimeoutSweeper`: `PENDING` > 5 min → `FAILED` (covers dead-lettered requests that never get a reply)
+- [x] A `FAILED` user may register again (same row, new saga)
+- [x] `register` waits up to 5 s for the saga: 201 + tokens (usual case, unchanged frontend path), 202 without tokens (still pending), 503 (failed). Signup page handles 202; login page explains Google sign-in redirects with `?error=account_setup_pending|failed`
+
+Decisions made while implementing:
+
+- **Synchronous facade over the async saga** rather than making every client poll: the saga normally finishes in ~1 s, so the common path keeps its old contract.
+- **No `user.activated` topic**: activation publishes the existing `auth.user-updated` snapshot.
+- auth's integration tests run the saga over real Kafka against a `FakePlaylistParticipant` test listener.
+- **Found by the end-to-end run:** inside an HTTP request, Spring's open-in-view keeps one EntityManager for the
+  whole request, so the wait loop kept reading the cached PENDING user and every web signup answered 202. The loop now
+  reads `users.status` with a query (`findStatusById`); `RegistrationSagaIT` reproduces a request-bound EntityManager.
+- **Kafka metadata refresh lowered to 30 s** (`spring.kafka.properties.metadata.max.age.ms`, global config): a topic
+  grown to 3 partitions by a `NewTopic` bean went unnoticed by an already-running consumer for up to 5 minutes.
 
 ### Phase 4 — Saga B (catalog deletes)
 

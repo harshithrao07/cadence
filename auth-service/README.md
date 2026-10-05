@@ -7,7 +7,12 @@ Owns user identity. Handles registration, password-based login, OAuth2 (Google) 
 - Register users with BCrypt-hashed passwords + strong-password policy
 - Authenticate password logins, issue access + refresh JWTs (15 min / 7 days)
 - OAuth2 authorization-code flow against Google; provision local user on first sign-in
-- Publish `auth.user-created` events so playlist-service can provision a Liked-Songs playlist
+- Run the registration saga: users start `PENDING`, `auth.user-registered` asks playlist-service to provision a
+  Liked Songs playlist, and the reply activates the user (or marks the registration `FAILED`). Only `ACTIVE` users
+  get tokens: `POST /auth/v1/register` waits up to `cadence.registration.await-timeout` (5 s) and answers 201 with
+  tokens, 202 (still setting up, no tokens) or 503 (failed; registering again with the same email retries).
+  Login, token refresh and Google sign-in are refused until the account is `ACTIVE`; a sweeper fails registrations
+  still `PENDING` after `cadence.registration.pending-timeout` (5 min).
 - Publish `auth.email-verification` events so notification-service can send the verification email
 - Validate and consume email verification tokens
 
@@ -29,7 +34,7 @@ flowchart TB
     as --> ur[UserRepository]
     as --> pe[PasswordEncoder<br/>BCrypt]
     as --> jwt[JwtUtil]
-    as --> ucp[UserCreatedProducer]
+    as --> ucp[UserRegisteredProducer]
 
     evc --> evs[EmailVerificationService]
     evs --> evtr[EmailVerificationTokenRepository]
@@ -40,7 +45,7 @@ flowchart TB
 
     ur --> mysql[(MySQL<br/>users<br/>email_verification_token)]
 
-    ucp --> kuc[[auth.user-created]]
+    ucp --> kuc[[auth.user-registered]]
     evp --> kev[[auth.email-verification]]
 
     kuc -.consumed.-> playlist[playlist-service]
@@ -68,7 +73,7 @@ sequenceDiagram
     AS->>AS: BCrypt.encode(password)
     AS->>DB: save User
     DB-->>AS: savedUser (id assigned)
-    AS->>K: publish UserCreatedEvent(userId)
+    AS->>K: publish UserRegisteredEvent(userId)
     AS->>AS: jwtUtil.generateToken(user, 15)<br/>jwtUtil.generateToken(user, 7d)
     AS-->>AC: 201 + { id, accessToken, refreshToken }
     AC-->>G: response
@@ -174,7 +179,8 @@ catalog-service and applied here from `catalog.media-updated` (own avatar only, 
 
 | Direction | Topic | Event | When |
 |---|---|---|---|
-| Produces | `auth.user-created` | `UserCreatedEvent { userId }` | After successful registration (password + OAuth2) |
+| Produces | `auth.user-registered` | `UserRegisteredEvent { userId }` | Registration saga start (password + OAuth2) |
+| Consumes | `playlist.liked-songs-created` / `-failed` | `LikedSongsCreatedEvent` / `LikedSongsFailedEvent` | Activates the user, or marks the registration FAILED |
 | Produces | `auth.email-verification` | `EmailVerificationEvent { email, verificationLink }` | When a verification link is requested |
 
 Both producers swallow Kafka failures (logged but non-fatal) so a downstream Kafka outage doesn't block user signup.
@@ -217,7 +223,7 @@ From `centralconfigs/auth-service/auth-service.properties`:
 | `AuthenticationControllerTest` | `@WebMvcTest` slice — HTTP wiring + validation |
 | `InternalTrafficFilterTest` | Gateway-secret enforcement |
 | `AuthenticationServiceIT` | `@SpringBootTest` with real MySQL via Testcontainers — register + authenticate end-to-end with real BCrypt + JWT |
-| `KafkaPublishingIT` | Real Kafka container — verifies `auth.user-created` and `auth.email-verification` events round-trip |
+| `KafkaPublishingIT` | Real Kafka container — verifies `auth.user-registered` and `auth.email-verification` events round-trip |
 
 ```bash
 cd auth-service && ./mvnw test

@@ -135,7 +135,7 @@ flowchart TB
     gateway -.fetch config.-> cfgsrv
 
     subgraph KAFKA[Kafka topics]
-        userCreated[[auth.user-created]]
+        userCreated[[auth.user-registered]]
         emailVerif[[auth.email-verification]]
         recordCreated[[catalog.record-created]]
     end
@@ -276,7 +276,8 @@ Topics are auto-created by the producer on first send (`spring.kafka.admin.auto-
 
 | Topic | Producer | Consumers | Purpose |
 |---|---|---|---|
-| `auth.user-created` | `auth-service.UserCreatedProducer` | `playlist-service.UserCreatedConsumer` | New user registered → playlist-service creates a Liked-Songs system playlist for them. |
+| `auth.user-registered` | `auth-service.UserRegisteredProducer` | `playlist-service.UserRegisteredConsumer` | Registration saga start: playlist-service creates the user's Liked Songs playlist and replies. |
+| `playlist.liked-songs-created` / `playlist.liked-songs-failed` | `playlist-service.UserRegisteredConsumer` | `auth-service.LikedSongsReplyConsumer` | Registration saga reply: auth activates the user, or marks the registration FAILED (compensation). |
 | `auth.email-verification` | `auth-service.EmailVerificationProducer` | `notification-service.EmailVerificationConsumer` | Sign-up triggers a verification email send. |
 | `catalog.record-created` | `catalog-service.RecordCreatedProducer` | `notification-service.RecordCreatedConsumer` | New record uploaded → notification-service emails followers of all participating artists. |
 | `auth.user-updated` | `auth-service.UserUpdatedProducer` | `catalog-service.UserUpdatedConsumer` | User created or profile changed → catalog upserts its `user_replica`. |

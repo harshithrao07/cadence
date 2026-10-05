@@ -7,7 +7,7 @@ Owns user playlists. Standard CRUD plus the special "Liked Songs" system playlis
 - CRUD for user-created playlists (visibility: PUBLIC / PRIVATE)
 - Add / remove songs from a playlist (preserving insertion order via `@OrderColumn`)
 - Like / unlike playlists; preserve the order in which a user liked them
-- Auto-create a `LIKED_SONGS` system playlist for each new user (consumed from `auth.user-created` event)
+- Auto-create a `LIKED_SONGS` system playlist for each new user (registration saga participant: consumes `auth.user-registered`, replies `playlist.liked-songs-created` / `playlist.liked-songs-failed`)
 - Search playlists by name (PUBLIC only)
 - Resolve song details + owner previews via Feign clients to catalog-service and auth-service
 
@@ -31,8 +31,8 @@ flowchart TB
     upc -.via Eureka.- auth[auth-service]
     cpc -.via Eureka.- catalog[catalog-service]
 
-    kafka[[auth.user-created topic]]
-    kafka -->|UserCreatedConsumer| ucc[UserCreatedConsumer]
+    kafka[[auth.user-registered topic]]
+    kafka -->|UserRegisteredConsumer| ucc[UserRegisteredConsumer]
     ucc -->|createLikedSongsPlaylistForUser| ps
 
     auth -.publishes.-> kafka
@@ -79,12 +79,12 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Auth as auth-service
-    participant K as Kafka<br/>auth.user-created
-    participant UC as UserCreatedConsumer
+    participant K as Kafka<br/>auth.user-registered
+    participant UC as UserRegisteredConsumer
     participant PS as PlaylistService
     participant DB as MySQL
 
-    Auth->>K: publish UserCreatedEvent(userId)
+    Auth->>K: publish UserRegisteredEvent(userId)
     K-->>UC: deliver to playlist-service
     UC->>PS: createLikedSongsPlaylistForUser(userId)
     PS->>DB: existsById("LIKED_SONGS_<userId>")?
@@ -159,7 +159,7 @@ Three things worth noting about the data model:
 
 | Direction | Topic | Event | Group ID |
 |---|---|---|---|
-| Consumes | `auth.user-created` | `UserCreatedEvent { userId }` | `playlist-service` |
+| Consumes | `auth.user-registered` | `UserRegisteredEvent { userId }` | `playlist-service` |
 
 Consumer auto-startup is enabled in production; tests disable it via `spring.kafka.listener.auto-startup=false` so they don't try to bind to a non-running broker.
 
@@ -186,7 +186,7 @@ From `centralconfigs/playlist-service/playlist-service.properties`:
 - `spring.kafka.consumer.group-id=playlist-service`
 - `spring.kafka.consumer.value-deserializer=...JsonDeserializer`
 - `spring.kafka.consumer.properties.spring.json.trusted.packages=*`
-- `spring.kafka.consumer.properties.spring.json.value.default.type=com.cadence.playlist_service.events.UserCreatedEvent`
+- `spring.kafka.consumer.properties.spring.json.value.default.type=com.cadence.playlist_service.events.UserRegisteredEvent`
 
 ## Testing
 
@@ -217,4 +217,4 @@ Required env:
 
 ## Boot Order
 
-discovery-service → config-server → playlist-service. Feign clients to auth-service / catalog-service tolerate those services being absent (they fail per-call), but the `auth.user-created` consumer will sit idle until auth-service publishes events.
+discovery-service → config-server → playlist-service. Feign clients to auth-service / catalog-service tolerate those services being absent (they fail per-call), but the `auth.user-registered` consumer will sit idle until auth-service publishes events.

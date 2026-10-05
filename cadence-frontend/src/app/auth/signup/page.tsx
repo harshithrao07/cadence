@@ -44,6 +44,13 @@ const Signup = () => {
         withCredentials: true,
       });
 
+      // 202: the account is still being set up (registration saga); no tokens yet.
+      if (response.status === 202) {
+        toast.info(response.data.message || "Your account is being set up. You can log in in a moment.");
+        router.push("/auth/login");
+        return;
+      }
+
       const authResponse: AuthenticationResponseDTO = response.data.data;
       localStorage.setItem("auth_details", JSON.stringify(authResponse));
 

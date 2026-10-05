@@ -16,7 +16,7 @@ import org.testcontainers.utility.DockerImageName;
 
 @ActiveProfiles("test")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@Import(BaseIntegrationTest.TestSecurityConfig.class)
+@Import({BaseIntegrationTest.TestSecurityConfig.class, FakePlaylistParticipant.class})
 public abstract class BaseIntegrationTest {
 
     @ServiceConnection

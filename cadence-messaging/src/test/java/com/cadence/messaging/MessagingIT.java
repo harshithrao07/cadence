@@ -2,7 +2,7 @@ package com.cadence.messaging;
 
 import com.cadence.events.EventEnvelope;
 import com.cadence.events.Topics;
-import com.cadence.events.UserCreatedEvent;
+import com.cadence.events.UserRegisteredEvent;
 import com.cadence.messaging.inbox.IdempotentEventHandler;
 import com.cadence.messaging.outbox.OutboxEvent;
 import com.cadence.messaging.outbox.OutboxPublisher;
@@ -93,7 +93,7 @@ class MessagingIT {
 
     @Test
     void publish_storesEnvelope_andRelaySendsItKeyedByAggregate() {
-        UUID eventId = tx.execute(s -> publisher.publish(topic, "user", "user-1", new UserCreatedEvent("user-1")));
+        UUID eventId = tx.execute(s -> publisher.publish(topic, "user", "user-1", new UserRegisteredEvent("user-1")));
 
         assertThat(unsentCount()).isEqualTo(1);
         assertThat(relay.relayBatch()).isEqualTo(1);
@@ -103,9 +103,9 @@ class MessagingIT {
         assertThat(records).hasSize(1);
         assertThat(records.get(0).key()).isEqualTo("user-1");
 
-        EventEnvelope<UserCreatedEvent> envelope = codec.decode(records.get(0).value(), UserCreatedEvent.class);
+        EventEnvelope<UserRegisteredEvent> envelope = codec.decode(records.get(0).value(), UserRegisteredEvent.class);
         assertThat(envelope.eventId()).isEqualTo(eventId);
-        assertThat(envelope.type()).isEqualTo("UserCreatedEvent");
+        assertThat(envelope.type()).isEqualTo("UserRegisteredEvent");
         assertThat(envelope.version()).isEqualTo(1);
         assertThat(envelope.sagaId()).isNotNull();
         assertThat(envelope.payload().userId()).isEqualTo("user-1");
@@ -114,23 +114,23 @@ class MessagingIT {
     @Test
     void largePayload_roundTrips() {
         String bigId = "u".repeat(100_000);
-        tx.executeWithoutResult(s -> publisher.publish(topic, "user", "user-big", new UserCreatedEvent(bigId)));
+        tx.executeWithoutResult(s -> publisher.publish(topic, "user", "user-big", new UserRegisteredEvent(bigId)));
 
         assertThat(relay.relayBatch()).isEqualTo(1);
-        assertThat(codec.decode(poll(consumer, 1).get(0).value(), UserCreatedEvent.class).payload().userId())
+        assertThat(codec.decode(poll(consumer, 1).get(0).value(), UserRegisteredEvent.class).payload().userId())
                 .isEqualTo(bigId);
     }
 
     @Test
     void publish_outsideTransaction_isRejected() {
-        assertThatThrownBy(() -> publisher.publish(topic, "user", "user-1", new UserCreatedEvent("user-1")))
+        assertThatThrownBy(() -> publisher.publish(topic, "user", "user-1", new UserRegisteredEvent("user-1")))
                 .isInstanceOf(IllegalTransactionStateException.class);
     }
 
     @Test
     void publish_inRolledBackTransaction_leavesNothingToSend() {
         tx.executeWithoutResult(s -> {
-            publisher.publish(topic, "user", "user-1", new UserCreatedEvent("user-1"));
+            publisher.publish(topic, "user", "user-1", new UserRegisteredEvent("user-1"));
             s.setRollbackOnly();
         });
 
@@ -140,7 +140,7 @@ class MessagingIT {
     @Test
     void publishFailure_rollsBackCallersTransaction_evenIfCallerSwallowsIt() {
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
-            publisher.publish(topic, "user", "user-1", new UserCreatedEvent("user-1"));
+            publisher.publish(topic, "user", "user-1", new UserRegisteredEvent("user-1"));
             try {
                 publisher.publish(topic, "user", "user-2", new Unserializable());
             } catch (RuntimeException swallowed) {
@@ -155,17 +155,17 @@ class MessagingIT {
     void publish_insideHandledEvent_joinsThatSaga() {
         UUID sagaId = UUID.randomUUID();
         try (SagaContext.Scope ignored = SagaContext.join(sagaId, UUID.randomUUID())) {
-            tx.executeWithoutResult(s -> publisher.publish(topic, "user", "user-1", new UserCreatedEvent("user-1")));
+            tx.executeWithoutResult(s -> publisher.publish(topic, "user", "user-1", new UserRegisteredEvent("user-1")));
         }
         relay.relayBatch();
 
-        EventEnvelope<UserCreatedEvent> envelope = codec.decode(poll(consumer, 1).get(0).value(), UserCreatedEvent.class);
+        EventEnvelope<UserRegisteredEvent> envelope = codec.decode(poll(consumer, 1).get(0).value(), UserRegisteredEvent.class);
         assertThat(envelope.sagaId()).isEqualTo(sagaId);
     }
 
     @Test
     void crashAfterSend_beforeCommit_resendsSameEvent() {
-        UUID eventId = tx.execute(s -> publisher.publish(topic, "user", "user-1", new UserCreatedEvent("user-1")));
+        UUID eventId = tx.execute(s -> publisher.publish(topic, "user", "user-1", new UserRegisteredEvent("user-1")));
 
         // The relay's transaction joins this one, which then rolls back: Kafka got the message, sent_at was lost.
         tx.executeWithoutResult(s -> {
@@ -180,7 +180,7 @@ class MessagingIT {
         List<ConsumerRecord<String, String>> records = poll(consumer, 2);
         assertThat(records).hasSize(2);
         assertThat(records).allSatisfy(r ->
-                assertThat(codec.decode(r.value(), UserCreatedEvent.class).eventId()).isEqualTo(eventId));
+                assertThat(codec.decode(r.value(), UserRegisteredEvent.class).eventId()).isEqualTo(eventId));
     }
 
     @Test
@@ -188,7 +188,7 @@ class MessagingIT {
         int events = 60;
         tx.executeWithoutResult(s -> {
             for (int i = 0; i < events; i++) {
-                publisher.publish(topic, "user", "user-" + i, new UserCreatedEvent("user-" + i));
+                publisher.publish(topic, "user", "user-" + i, new UserRegisteredEvent("user-" + i));
             }
         });
 
@@ -216,15 +216,15 @@ class MessagingIT {
 
         List<ConsumerRecord<String, String>> records = poll(consumer, events);
         assertThat(records).hasSize(events);
-        assertThat(records.stream().map(r -> codec.decode(r.value(), UserCreatedEvent.class).eventId()).distinct())
+        assertThat(records.stream().map(r -> codec.decode(r.value(), UserRegisteredEvent.class).eventId()).distinct())
                 .hasSize(events);
     }
 
     @Test
     void permanentlyRejectedRow_isParked_andDoesNotBlockLaterEvents() {
         tx.executeWithoutResult(s -> {
-            publisher.publish("invalid topic name!", "user", "bad", new UserCreatedEvent("bad"));
-            publisher.publish(topic, "user", "good", new UserCreatedEvent("good"));
+            publisher.publish("invalid topic name!", "user", "bad", new UserRegisteredEvent("bad"));
+            publisher.publish(topic, "user", "good", new UserRegisteredEvent("good"));
         });
 
         relay.relayBatch();
@@ -260,9 +260,9 @@ class MessagingIT {
         beanFactory.autowireBean(flakyRelay);
 
         tx.executeWithoutResult(s -> {
-            publisher.publish(stuckTopic, "user", "stuck-1", new UserCreatedEvent("stuck-1"));
-            publisher.publish(topic, "user", "flowing", new UserCreatedEvent("flowing"));
-            publisher.publish(stuckTopic, "user", "stuck-2", new UserCreatedEvent("stuck-2"));
+            publisher.publish(stuckTopic, "user", "stuck-1", new UserRegisteredEvent("stuck-1"));
+            publisher.publish(topic, "user", "flowing", new UserRegisteredEvent("flowing"));
+            publisher.publish(stuckTopic, "user", "stuck-2", new UserRegisteredEvent("stuck-2"));
         });
 
         assertThat(flakyRelay.relayBatch()).isEqualTo(1);
@@ -288,10 +288,10 @@ class MessagingIT {
     @Test
     void cleanup_deletesOnlySentRowsPastRetention() {
         tx.executeWithoutResult(s -> {
-            publisher.publish(topic, "user", "sent", new UserCreatedEvent("sent"));
+            publisher.publish(topic, "user", "sent", new UserRegisteredEvent("sent"));
         });
         relay.relayBatch();
-        tx.executeWithoutResult(s -> publisher.publish(topic, "user", "unsent", new UserCreatedEvent("unsent")));
+        tx.executeWithoutResult(s -> publisher.publish(topic, "user", "unsent", new UserRegisteredEvent("unsent")));
 
         assertThat(relay.deleteSentBefore(Instant.now().minusSeconds(60))).isZero();
         assertThat(relay.deleteSentBefore(Instant.now().plusSeconds(60))).isEqualTo(1);
@@ -302,51 +302,51 @@ class MessagingIT {
 
     @Test
     void handler_runsActionOncePerEvent_perHandler() {
-        String message = codec.encode(EventEnvelope.of(UUID.randomUUID(), "UserCreatedEvent", new UserCreatedEvent("u1")));
+        String message = codec.encode(EventEnvelope.of(UUID.randomUUID(), "UserRegisteredEvent", new UserRegisteredEvent("u1")));
         AtomicInteger calls = new AtomicInteger();
 
-        assertThat(handler.handle("test.a", message, UserCreatedEvent.class, e -> calls.incrementAndGet())).isTrue();
-        assertThat(handler.handle("test.a", message, UserCreatedEvent.class, e -> calls.incrementAndGet())).isFalse();
-        assertThat(handler.handle("test.b", message, UserCreatedEvent.class, e -> calls.incrementAndGet())).isTrue();
+        assertThat(handler.handle("test.a", message, UserRegisteredEvent.class, e -> calls.incrementAndGet())).isTrue();
+        assertThat(handler.handle("test.a", message, UserRegisteredEvent.class, e -> calls.incrementAndGet())).isFalse();
+        assertThat(handler.handle("test.b", message, UserRegisteredEvent.class, e -> calls.incrementAndGet())).isTrue();
 
         assertThat(calls).hasValue(2);
     }
 
     @Test
     void handler_failedAction_isNotMarkedProcessed_soRetryRunsIt() {
-        String message = codec.encode(EventEnvelope.of(UUID.randomUUID(), "UserCreatedEvent", new UserCreatedEvent("u1")));
+        String message = codec.encode(EventEnvelope.of(UUID.randomUUID(), "UserRegisteredEvent", new UserRegisteredEvent("u1")));
         AtomicInteger calls = new AtomicInteger();
 
-        assertThatThrownBy(() -> handler.handle("test.a", message, UserCreatedEvent.class, e -> {
+        assertThatThrownBy(() -> handler.handle("test.a", message, UserRegisteredEvent.class, e -> {
             calls.incrementAndGet();
             throw new IllegalStateException("boom");
         })).isInstanceOf(IllegalStateException.class);
 
-        assertThat(handler.handle("test.a", message, UserCreatedEvent.class, e -> calls.incrementAndGet())).isTrue();
+        assertThat(handler.handle("test.a", message, UserRegisteredEvent.class, e -> calls.incrementAndGet())).isTrue();
         assertThat(calls).hasValue(2);
     }
 
     @Test
     void handler_exposesSagaToAction_andEventsItPublishJoinTheSaga() {
         UUID sagaId = UUID.randomUUID();
-        String message = codec.encode(EventEnvelope.of(sagaId, "UserCreatedEvent", new UserCreatedEvent("u1")));
+        String message = codec.encode(EventEnvelope.of(sagaId, "UserRegisteredEvent", new UserRegisteredEvent("u1")));
 
-        handler.handle("test.a", message, UserCreatedEvent.class, e -> {
+        handler.handle("test.a", message, UserRegisteredEvent.class, e -> {
             assertThat(SagaContext.currentSagaId()).contains(sagaId);
-            publisher.publish(topic, "user", "u1", new UserCreatedEvent("u1-followup"));
+            publisher.publish(topic, "user", "u1", new UserRegisteredEvent("u1-followup"));
         });
         assertThat(SagaContext.currentSagaId()).isEmpty();
 
         relay.relayBatch();
-        EventEnvelope<UserCreatedEvent> followUp = codec.decode(poll(consumer, 1).get(0).value(), UserCreatedEvent.class);
+        EventEnvelope<UserRegisteredEvent> followUp = codec.decode(poll(consumer, 1).get(0).value(), UserRegisteredEvent.class);
         assertThat(followUp.sagaId()).isEqualTo(sagaId);
     }
 
     @Test
     void handler_rejectsMalformedMessages() {
-        assertThatThrownBy(() -> handler.handle("test.a", "{not json", UserCreatedEvent.class, e -> { }))
+        assertThatThrownBy(() -> handler.handle("test.a", "{not json", UserRegisteredEvent.class, e -> { }))
                 .isInstanceOf(EventDecodingException.class);
-        assertThatThrownBy(() -> handler.handle("test.a", "{\"type\":\"x\"}", UserCreatedEvent.class, e -> { }))
+        assertThatThrownBy(() -> handler.handle("test.a", "{\"type\":\"x\"}", UserRegisteredEvent.class, e -> { }))
                 .isInstanceOf(EventDecodingException.class);
     }
 

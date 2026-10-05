@@ -49,9 +49,25 @@ public class User implements UserDetails {
 
     private OAuth2Provider provider;
 
+    /** Existing rows (created before the registration saga) default to ACTIVE. */
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, columnDefinition = "varchar(16) not null default 'ACTIVE'")
+    private UserStatus status = UserStatus.PENDING;
+
+    /** When the current registration attempt started; used by the timeout sweeper. */
+    @Column(name = "registered_at")
+    private java.time.Instant registeredAt;
+
     @Builder.Default
     @Column(name = "email_verified", nullable = false)
     private boolean emailVerified = false;
+
+    /** Only users that finished the registration saga may authenticate. */
+    @Override
+    public boolean isEnabled() {
+        return status == UserStatus.ACTIVE;
+    }
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
