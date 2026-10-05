@@ -5,7 +5,7 @@
 
 set -e
 
-SERVICES=(config-server auth-service catalog-service playlist-service streaming-service notification-service)
+SERVICES=(cadence-messaging config-server auth-service catalog-service playlist-service streaming-service notification-service)
 
 for svc in "${SERVICES[@]}"; do
   echo

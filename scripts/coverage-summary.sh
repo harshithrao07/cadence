@@ -14,7 +14,7 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 README="$REPO_ROOT/README.md"
-SERVICES=(config-server auth-service catalog-service playlist-service streaming-service notification-service)
+SERVICES=(cadence-messaging config-server auth-service catalog-service playlist-service streaming-service notification-service)
 
 extract_counter() {
   local xml="$1" type="$2"

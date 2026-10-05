@@ -2,6 +2,7 @@
 # Everything is excluded except the shared module and the Java services.
 *
 !cadence-events
+!cadence-messaging
 !auth-service
 !catalog-service
 !playlist-service

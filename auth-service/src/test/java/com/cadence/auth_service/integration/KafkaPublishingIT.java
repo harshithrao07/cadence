@@ -1,11 +1,14 @@
 package com.cadence.auth_service.integration;
 
-import com.cadence.events.Topics;
 import com.cadence.auth_service.dto.auth.RegisterRequestDTO;
-import com.cadence.events.EmailVerificationEvent;
-import com.cadence.events.UserCreatedEvent;
+import com.cadence.auth_service.producers.EmailVerificationProducer;
 import com.cadence.auth_service.repository.UserRepository;
 import com.cadence.auth_service.service.AuthenticationService;
+import com.cadence.events.EmailVerificationEvent;
+import com.cadence.events.EventEnvelope;
+import com.cadence.events.Topics;
+import com.cadence.events.UserCreatedEvent;
+import com.cadence.messaging.EventCodec;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -15,8 +18,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.support.serializer.JsonDeserializer;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.util.HashMap;
@@ -25,21 +28,26 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * End-to-end through the outbox: the business transaction writes the event, the relay delivers it as an envelope.
+ */
 class KafkaPublishingIT extends BaseIntegrationTest {
 
     @Autowired AuthenticationService authenticationService;
     @Autowired UserRepository userRepository;
-    @Autowired KafkaTemplate<String, EmailVerificationEvent> emailKafkaTemplate;
+    @Autowired EmailVerificationProducer emailVerificationProducer;
+    @Autowired EventCodec codec;
+    @Autowired PlatformTransactionManager transactionManager;
 
-    private KafkaConsumer<String, UserCreatedEvent> userConsumer;
-    private KafkaConsumer<String, EmailVerificationEvent> emailConsumer;
+    private KafkaConsumer<String, String> userConsumer;
+    private KafkaConsumer<String, String> emailConsumer;
 
     @BeforeEach
     void setUp() {
         userRepository.deleteAll();
 
-        userConsumer = newConsumer(UserCreatedEvent.class, Topics.USER_CREATED_TOPIC);
-        emailConsumer = newConsumer(EmailVerificationEvent.class, Topics.EMAIL_VERIFICATION_TOPIC);
+        userConsumer = newConsumer(Topics.USER_CREATED_TOPIC);
+        emailConsumer = newConsumer(Topics.EMAIL_VERIFICATION_TOPIC);
     }
 
     @AfterEach
@@ -49,50 +57,55 @@ class KafkaPublishingIT extends BaseIntegrationTest {
     }
 
     @Test
-    void register_publishesUserCreatedEvent_withSavedUserId() {
+    void register_relaysUserCreatedEvent_withSavedUserId() {
         authenticationService.register(new RegisterRequestDTO("Alice", "alice@example.com", "StrongPass1!"));
 
         String savedUserId = userRepository.findByEmail("alice@example.com").orElseThrow().getId();
 
-        ConsumerRecord<String, UserCreatedEvent> received = pollForOne(userConsumer, Duration.ofSeconds(15));
+        ConsumerRecord<String, String> received = pollForKey(userConsumer, savedUserId, Duration.ofSeconds(15));
         assertThat(received).as("expected one message on %s", Topics.USER_CREATED_TOPIC).isNotNull();
-        assertThat(received.value().userId()).isEqualTo(savedUserId);
+        assertThat(received.key()).isEqualTo(savedUserId);
+
+        EventEnvelope<UserCreatedEvent> envelope = codec.decode(received.value(), UserCreatedEvent.class);
+        assertThat(envelope.type()).isEqualTo("UserCreatedEvent");
+        assertThat(envelope.sagaId()).isNotNull();
+        assertThat(envelope.payload().userId()).isEqualTo(savedUserId);
     }
 
     @Test
-    void emailVerificationProducer_serializesEvent_andRoutesByEmailKey() {
+    void emailVerificationProducer_relaysEnvelope_keyedByEmail() {
         EmailVerificationEvent event = new EmailVerificationEvent("bob@example.com", "https://example.com/verify?token=abc");
 
-        emailKafkaTemplate.send(Topics.EMAIL_VERIFICATION_TOPIC, event.email(), event);
-        emailKafkaTemplate.flush();
+        new TransactionTemplate(transactionManager).executeWithoutResult(s -> emailVerificationProducer.send(event));
 
-        ConsumerRecord<String, EmailVerificationEvent> received = pollForOne(emailConsumer, Duration.ofSeconds(15));
+        ConsumerRecord<String, String> received = pollForKey(emailConsumer, "bob@example.com", Duration.ofSeconds(15));
         assertThat(received).isNotNull();
         assertThat(received.key()).isEqualTo("bob@example.com");
-        assertThat(received.value().email()).isEqualTo("bob@example.com");
-        assertThat(received.value().verificationLink()).isEqualTo("https://example.com/verify?token=abc");
+        assertThat(codec.decode(received.value(), EmailVerificationEvent.class).payload()).isEqualTo(event);
     }
 
-    private <T> KafkaConsumer<String, T> newConsumer(Class<T> valueType, String topic) {
+    private KafkaConsumer<String, String> newConsumer(String topic) {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, valueType.getSimpleName() + "-test-" + System.nanoTime());
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, topic + "-test-" + System.nanoTime());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
-        props.put(JsonDeserializer.TRUSTED_PACKAGES, "*");
-        props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, valueType.getName());
-        KafkaConsumer<String, T> c = new KafkaConsumer<>(props);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.METADATA_MAX_AGE_CONFIG, 500);
+        KafkaConsumer<String, String> c = new KafkaConsumer<>(props);
         c.subscribe(List.of(topic));
         c.poll(Duration.ofSeconds(2));
         return c;
     }
 
-    private static <T> ConsumerRecord<String, T> pollForOne(KafkaConsumer<String, T> consumer, Duration timeout) {
+    /** Other ITs share the broker and publish to the same topics, so match on the key. */
+    private static ConsumerRecord<String, String> pollForKey(KafkaConsumer<String, String> consumer, String key, Duration timeout) {
         long deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {
-            ConsumerRecords<String, T> batch = consumer.poll(Duration.ofMillis(500));
-            if (!batch.isEmpty()) return batch.iterator().next();
+            ConsumerRecords<String, String> batch = consumer.poll(Duration.ofMillis(500));
+            for (ConsumerRecord<String, String> record : batch) {
+                if (key.equals(record.key())) return record;
+            }
         }
         return null;
     }

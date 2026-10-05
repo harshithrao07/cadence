@@ -17,6 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         service:
+          - cadence-messaging
           - config-server
           - auth-service
           - catalog-service

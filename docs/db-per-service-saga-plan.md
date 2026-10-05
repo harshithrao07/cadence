@@ -1,6 +1,6 @@
 # Database-per-service + Choreography SAGA — Plan
 
-Status: **in progress** — Phase 0 started on branch `feat/db-per-service-saga`.
+Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–1 done.
 
 ## Why
 
@@ -67,7 +67,8 @@ Every event is wrapped in an envelope: `eventId` (UUID), `sagaId`, `type`, `vers
 | `user.data-purged` | playlist, catalog, streaming | auth | Saga D confirmations |
 | `catalog.record-deleted` / `catalog.artist-deleted` | catalog | playlist, streaming | Saga B (carries `songIds`) |
 | `catalog.songs-purged` | playlist, streaming | catalog | Saga B confirmations |
-| `email.verification` | auth | notification | Existing flow, moved onto the outbox |
+| `auth.user-created` | auth | playlist | Existing flow on the outbox; replaced by `user.registered` in Phase 3 |
+| `auth.email-verification` | auth | notification | Existing flow, moved onto the outbox |
 | `catalog.record-created` | catalog | notification | Existing flow, moved onto the outbox |
 
 Every topic gets a `.DLT` dead-letter topic.
@@ -131,12 +132,25 @@ Forward-only, no compensation.
 
 ### Phase 1 — reliable messaging (no behaviour change)
 
-- [ ] `outbox` table (`id`, `aggregatetype`, `aggregateid`, `type`, `payload` JSON, `created_at`, `sent_at`) in auth, catalog, playlist, streaming
-- [ ] `OutboxPublisher` interface + `PollingOutboxRelay` (`@Scheduled` 500 ms, `FOR UPDATE SKIP LOCKED`, batch 100) + cleanup of rows sent > 7 days ago
-- [ ] `processed_events(event_id PK, processed_at)` in every consumer, written in the consumer's transaction
-- [ ] `DefaultErrorHandler` with backoff + `DeadLetterPublishingRecoverer`
-- [ ] Move existing producers onto the outbox; switch to the envelope format
-- [ ] `sagaId` in logging MDC
+Implemented as a shared Spring Boot auto-configuration library, **`cadence-messaging`**, rather than per-service code:
+
+- [x] `outbox` table (`id`, `event_id`, `saga_id`, `aggregate_type`, `aggregate_id`, `type`, `topic`, `payload`, `created_at`, `sent_at`, `failed_at`, `last_error`) — entity in the library, created by each JPA service's `ddl-auto`
+- [x] `OutboxPublisher` (`Propagation.MANDATORY`; a failure marks the caller's transaction rollback-only even if the caller swallows it)
+- [x] `PollingOutboxRelay`: own single-thread scheduler, 500 ms, `FOR UPDATE SKIP LOCKED`, batch 100; hourly cleanup of rows sent > 7 days ago
+  - retriable send failure (broker down, missing topic) blocks only that topic for the batch, preserving its order while other topics flow; retried forever
+  - permanent Kafka error (invalid topic, record too large) parks the row (`failed_at`, `last_error`); set `failed_at = NULL` to retry
+  - `max.block.ms` capped at the 10 s send timeout so a missing topic can't stall the relay for 60 s per attempt
+- [x] `processed_events(handler, event_id)` + `IdempotentEventHandler`, written in the consumer's transaction
+- [x] `DefaultErrorHandler`: 4 exponential retries (1 s → 10 s), then `<topic>.DLT`; `EventDecodingException` skips retries
+- [x] Existing producers write to the outbox; every topic now carries `EventEnvelope` JSON as a string value
+- [x] `sagaId` / `eventId` in the logging MDC (`logging.pattern.level` in the global config)
+
+Decisions made while implementing:
+
+- **Topics renamed** with the format change so old and new formats never share a topic: `user_created` → `auth.user-created`, `email_verification` → `auth.email-verification`, `record_created` → `catalog.record-created`. Convention: `<producing-service>.<event>`. (A first attempt used `user.created`, which Kafka rejects next to an existing `user_created`: `.` and `_` collide in topic names.)
+- **`EventCodec` uses its own Jackson mapper**, not the service's, so the wire contract can't drift with one service's Jackson config; it ignores unknown fields for forward compatibility.
+- **notification-service has no database**, so it decodes envelopes and joins the saga context but has no inbox: a redelivered event can send a duplicate email.
+- **streaming-service** gets the library in Phase 4, when it first produces / consumes events.
 
 ### Phase 2 — follows move to catalog (shared DB still)
 

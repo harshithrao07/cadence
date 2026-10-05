@@ -135,9 +135,9 @@ flowchart TB
     gateway -.fetch config.-> cfgsrv
 
     subgraph KAFKA[Kafka topics]
-        userCreated[[user_created]]
-        emailVerif[[email_verification]]
-        recordCreated[[record_created]]
+        userCreated[[auth.user-created]]
+        emailVerif[[auth.email-verification]]
+        recordCreated[[catalog.record-created]]
     end
 
     auth -.publish.-> userCreated
@@ -276,11 +276,20 @@ Topics are auto-created by the producer on first send (`spring.kafka.admin.auto-
 
 | Topic | Producer | Consumers | Purpose |
 |---|---|---|---|
-| `user_created` | `auth-service.UserCreatedProducer` | `playlist-service.UserCreatedConsumer` | New user registered → playlist-service creates a Liked-Songs system playlist for them. |
-| `email_verification` | `auth-service.EmailVerificationProducer` | `notification-service.EmailVerificationConsumer` | Sign-up triggers a verification email send. |
-| `record_created` | `catalog-service.RecordCreatedProducer` | `notification-service.RecordCreatedConsumer` | New record uploaded → notification-service emails followers of all participating artists. |
+| `auth.user-created` | `auth-service.UserCreatedProducer` | `playlist-service.UserCreatedConsumer` | New user registered → playlist-service creates a Liked-Songs system playlist for them. |
+| `auth.email-verification` | `auth-service.EmailVerificationProducer` | `notification-service.EmailVerificationConsumer` | Sign-up triggers a verification email send. |
+| `catalog.record-created` | `catalog-service.RecordCreatedProducer` | `notification-service.RecordCreatedConsumer` | New record uploaded → notification-service emails followers of all participating artists. |
 
-Consumers use Spring Kafka's `@KafkaListener`. JSON deserialization with `JsonDeserializer` and `spring.json.trusted.packages=*` for cross-service event types.
+Event classes and topic names live in [cadence-events](cadence-events/); topics are named `<producing-service>.<event>`.
+Delivery is handled by the shared [cadence-messaging](cadence-messaging/) auto-configuration:
+
+- **Transactional outbox.** Producers write the event to an `outbox` table in the same transaction as the business change (`OutboxPublisher`); a polling relay (500 ms, `FOR UPDATE SKIP LOCKED`) sends it to Kafka. An event is published if and only if its transaction commits; delivery is at-least-once.
+- **Envelope.** Every message value is `EventEnvelope` JSON (`eventId`, `sagaId`, `type`, `version`, `occurredAt`, `payload`) sent as a plain string.
+- **Idempotent consumers.** `IdempotentEventHandler` records `(handler, eventId)` in `processed_events` in the consumer's transaction, so redeliveries are skipped. notification-service has no database and may send a duplicate email on redelivery.
+- **Retries + DLT.** 4 exponential retries (1 s → 10 s), then the record goes to `<topic>.DLT`; malformed messages skip the retries.
+- **Saga tracing.** Log lines carry `[saga:<id>]`; events published while handling an event keep its `sagaId`.
+
+See [docs/db-per-service-saga-plan.md](docs/db-per-service-saga-plan.md) for the database-per-service migration this is part of.
 
 ---
 
@@ -359,6 +368,7 @@ cadence/
 ├── streaming-service/
 ├── notification-service/
 ├── cadence-events/             # shared Kafka event records + topic names
+├── cadence-messaging/          # auto-config: transactional outbox + relay, idempotent consumers, DLT, saga ids
 ├── cadence-frontend/           # React/Vite client (separate workspace)
 ├── pom.xml                     # build aggregator (not a parent) — builds cadence-events before the services
 ├── compose.yaml                # local Kafka + MySQL via Docker Compose

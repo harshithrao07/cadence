@@ -55,6 +55,7 @@ public class EmailVerificationService {
         return ResponseEntity.ok("Email verified successfully");
     }
 
+    @Transactional
     public ResponseEntity<ApiResponseDTO<Void>> generateToken(UserDetails userDetails) {
         try {
             String email = userDetails.getUsername();

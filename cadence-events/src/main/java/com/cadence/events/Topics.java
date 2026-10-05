@@ -2,11 +2,18 @@ package com.cadence.events;
 
 /**
  * Kafka topic names. Single source of truth for producers and consumers.
+ * Every topic carries {@link EventEnvelope} JSON as a string value.
+ * <p>
+ * Convention: {@code <producing-service>.<event-in-kebab-case>}. Never reuse a pre-envelope name such as
+ * {@code user_created}: Kafka treats '.' and '_' as the same character, so {@code user.created} would collide.
  */
 public final class Topics {
-    public static final String USER_CREATED_TOPIC = "user_created";
-    public static final String EMAIL_VERIFICATION_TOPIC = "email_verification";
-    public static final String RECORD_CREATED_TOPIC = "record_created";
+    public static final String USER_CREATED_TOPIC = "auth.user-created";
+    public static final String EMAIL_VERIFICATION_TOPIC = "auth.email-verification";
+    public static final String RECORD_CREATED_TOPIC = "catalog.record-created";
+
+    /** Failed records end up on {@code <topic> + DLT_SUFFIX}. */
+    public static final String DLT_SUFFIX = ".DLT";
 
     private Topics() {
     }

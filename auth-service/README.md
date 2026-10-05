@@ -7,8 +7,8 @@ Owns user identity. Handles registration, password-based login, OAuth2 (Google) 
 - Register users with BCrypt-hashed passwords + strong-password policy
 - Authenticate password logins, issue access + refresh JWTs (15 min / 7 days)
 - OAuth2 authorization-code flow against Google; provision local user on first sign-in
-- Publish `user_created` events so playlist-service can provision a Liked-Songs playlist
-- Publish `email_verification` events so notification-service can send the verification email
+- Publish `auth.user-created` events so playlist-service can provision a Liked-Songs playlist
+- Publish `auth.email-verification` events so notification-service can send the verification email
 - Validate and consume email verification tokens
 
 ## Architecture
@@ -40,8 +40,8 @@ flowchart TB
 
     ur --> mysql[(MySQL<br/>users<br/>email_verification_token)]
 
-    ucp --> kuc[[user_created]]
-    evp --> kev[[email_verification]]
+    ucp --> kuc[[auth.user-created]]
+    evp --> kev[[auth.email-verification]]
 
     kuc -.consumed.-> playlist[playlist-service]
     kev -.consumed.-> notif[notification-service]
@@ -170,8 +170,8 @@ The `users` table also has a `@ManyToMany` to a local `Artist` entity via `artis
 
 | Direction | Topic | Event | When |
 |---|---|---|---|
-| Produces | `user_created` | `UserCreatedEvent { userId }` | After successful registration (password + OAuth2) |
-| Produces | `email_verification` | `EmailVerificationEvent { email, verificationLink }` | When a verification link is requested |
+| Produces | `auth.user-created` | `UserCreatedEvent { userId }` | After successful registration (password + OAuth2) |
+| Produces | `auth.email-verification` | `EmailVerificationEvent { email, verificationLink }` | When a verification link is requested |
 
 Both producers swallow Kafka failures (logged but non-fatal) so a downstream Kafka outage doesn't block user signup.
 
@@ -213,7 +213,7 @@ From `centralconfigs/auth-service/auth-service.properties`:
 | `AuthenticationControllerTest` | `@WebMvcTest` slice — HTTP wiring + validation |
 | `InternalTrafficFilterTest` | Gateway-secret enforcement |
 | `AuthenticationServiceIT` | `@SpringBootTest` with real MySQL via Testcontainers — register + authenticate end-to-end with real BCrypt + JWT |
-| `KafkaPublishingIT` | Real Kafka container — verifies `user_created` and `email_verification` events round-trip |
+| `KafkaPublishingIT` | Real Kafka container — verifies `auth.user-created` and `auth.email-verification` events round-trip |
 
 ```bash
 cd auth-service && ./mvnw test

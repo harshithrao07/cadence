@@ -8,7 +8,7 @@ Owns the music catalog: artists, records (albums/EPs/singles), songs, genres. Ha
 - Follow / unfollow artists; expose follower lists
 - S3 upload + signed URL generation for cover art and audio files
 - Search across artists/records/songs and a "discover" feed
-- Publish `record_created` events for notification-service to fan out follower emails
+- Publish `catalog.record-created` events for notification-service to fan out follower emails
 - Provide internal endpoints (`/internal/**`) used by Feign clients in other services
 
 ## Architecture
@@ -46,7 +46,7 @@ flowchart TB
 
     aws --> s3[(AWS S3<br/>cover art<br/>audio files)]
 
-    rcp --> kafka[[record_created topic]]
+    rcp --> kafka[[catalog.record-created topic]]
     kafka -.consumed.-> notif[notification-service]
 ```
 
@@ -194,7 +194,7 @@ erDiagram
 
 | Direction | Topic | Event | When |
 |---|---|---|---|
-| Produces | `record_created` | `RecordCreatedEvent { recordId, recordTitle, artists, coverUrl, followerEmails }` | After a record is saved + commit |
+| Produces | `catalog.record-created` | `RecordCreatedEvent { recordId, recordTitle, artists, coverUrl, followerEmails }` | After a record is saved + commit |
 
 The producer pre-fetches follower emails synchronously (so the consumer doesn't have to call back into catalog-service). Topic auto-created via `NewTopic` bean (3 partitions, 1 replica).
 
@@ -232,7 +232,7 @@ From `centralconfigs/catalog-service/catalog-service.properties`:
 | `ArtistControllerTest`, `GenreControllerTest`, `SongControllerTest`, `RecordControllerTest` | `@WebMvcTest` slices |
 | `InternalTrafficFilterTest` | Gateway-secret enforcement |
 | `ArtistServiceIT` | Full integration with real MySQL — follow/unfollow happy path + edge cases (already-following, missing user, missing artist, follow-order increment) |
-| `RecordKafkaIT` | Real Kafka container — `record_created` publish + JSON round-trip |
+| `RecordKafkaIT` | Real Kafka container — `catalog.record-created` publish + JSON round-trip |
 
 The integration tests are non-trivial here because `ArtistService` mixes JPA and raw `JdbcTemplate` against tables this service doesn't own. A small `test-schema.sql` provisions `users` and `artist_following` in the MySQL container so the cross-service queries work.
 

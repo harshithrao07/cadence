@@ -7,7 +7,7 @@ Owns user playlists. Standard CRUD plus the special "Liked Songs" system playlis
 - CRUD for user-created playlists (visibility: PUBLIC / PRIVATE)
 - Add / remove songs from a playlist (preserving insertion order via `@OrderColumn`)
 - Like / unlike playlists; preserve the order in which a user liked them
-- Auto-create a `LIKED_SONGS` system playlist for each new user (consumed from `user_created` event)
+- Auto-create a `LIKED_SONGS` system playlist for each new user (consumed from `auth.user-created` event)
 - Search playlists by name (PUBLIC only)
 - Resolve song details + owner previews via Feign clients to catalog-service and auth-service
 
@@ -31,7 +31,7 @@ flowchart TB
     upc -.via Eureka.- auth[auth-service]
     cpc -.via Eureka.- catalog[catalog-service]
 
-    kafka[[user_created topic]]
+    kafka[[auth.user-created topic]]
     kafka -->|UserCreatedConsumer| ucc[UserCreatedConsumer]
     ucc -->|createLikedSongsPlaylistForUser| ps
 
@@ -79,7 +79,7 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Auth as auth-service
-    participant K as Kafka<br/>user_created
+    participant K as Kafka<br/>auth.user-created
     participant UC as UserCreatedConsumer
     participant PS as PlaylistService
     participant DB as MySQL
@@ -159,7 +159,7 @@ Three things worth noting about the data model:
 
 | Direction | Topic | Event | Group ID |
 |---|---|---|---|
-| Consumes | `user_created` | `UserCreatedEvent { userId }` | `playlist-service` |
+| Consumes | `auth.user-created` | `UserCreatedEvent { userId }` | `playlist-service` |
 
 Consumer auto-startup is enabled in production; tests disable it via `spring.kafka.listener.auto-startup=false` so they don't try to bind to a non-running broker.
 
@@ -217,4 +217,4 @@ Required env:
 
 ## Boot Order
 
-discovery-service → config-server → playlist-service. Feign clients to auth-service / catalog-service tolerate those services being absent (they fail per-call), but the `user_created` consumer will sit idle until auth-service publishes events.
+discovery-service → config-server → playlist-service. Feign clients to auth-service / catalog-service tolerate those services being absent (they fail per-call), but the `auth.user-created` consumer will sit idle until auth-service publishes events.

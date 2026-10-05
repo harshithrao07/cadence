@@ -1,14 +1,20 @@
 package com.cadence.notification_service.consumers;
 
+import com.cadence.events.EventEnvelope;
 import com.cadence.events.RecordCreatedEvent;
+import com.cadence.messaging.EventCodec;
+import com.cadence.messaging.EventDecodingException;
 import com.cadence.notification_service.services.WorkerService;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -20,21 +26,16 @@ import static org.mockito.Mockito.verify;
 class RecordCreatedConsumerTest {
 
     @Mock WorkerService workerService;
-    @org.mockito.Spy ObjectMapper objectMapper = new ObjectMapper();
+    @Spy EventCodec codec = new EventCodec();
 
     @InjectMocks RecordCreatedConsumer consumer;
 
     @Test
-    void deserializesPayload_andDelegatesToWorker() throws Exception {
-        String payload = "{"
-                + "\"recordId\":\"rec-1\","
-                + "\"recordTitle\":\"Certified Lover Boy\","
-                + "\"artists\":[\"Drake\"],"
-                + "\"coverUrl\":\"https://cdn/cover.jpg\","
-                + "\"followerEmails\":[\"alice@example.com\",\"bob@example.com\"]"
-                + "}";
+    void decodesEnvelope_andDelegatesToWorker() {
+        RecordCreatedEvent event = new RecordCreatedEvent("rec-1", "Certified Lover Boy", List.of("Drake"),
+                "https://cdn/cover.jpg", List.of("alice@example.com", "bob@example.com"));
 
-        consumer.listenToNewlyCreatedRecord(payload);
+        consumer.listenToNewlyCreatedRecord(codec.encode(EventEnvelope.of(UUID.randomUUID(), "RecordCreatedEvent", event)));
 
         ArgumentCaptor<RecordCreatedEvent> captor = ArgumentCaptor.forClass(RecordCreatedEvent.class);
         verify(workerService).notifyFollowersOfNewRelease(captor.capture());
@@ -45,7 +46,7 @@ class RecordCreatedConsumerTest {
     @Test
     void invalidPayload_throws_andDoesNotInvokeWorker() {
         assertThatThrownBy(() -> consumer.listenToNewlyCreatedRecord("not-json"))
-                .isInstanceOf(Exception.class);
+                .isInstanceOf(EventDecodingException.class);
 
         verify(workerService, never()).notifyFollowersOfNewRelease(any());
     }
