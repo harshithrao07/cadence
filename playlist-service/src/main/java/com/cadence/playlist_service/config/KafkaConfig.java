@@ -18,6 +18,11 @@ public class KafkaConfig {
     }
 
     @Bean
+    public NewTopic userDataPurgedTopic() {
+        return TopicBuilder.name(Topics.PLAYLIST_USER_DATA_PURGED_TOPIC).partitions(3).replicas(1).build();
+    }
+
+    @Bean
     public NewTopic likedSongsFailedTopic() {
         return TopicBuilder.name(Topics.LIKED_SONGS_FAILED_TOPIC).partitions(3).replicas(1).build();
     }

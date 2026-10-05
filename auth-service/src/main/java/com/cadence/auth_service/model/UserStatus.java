@@ -9,5 +9,7 @@ public enum UserStatus {
     /** Fully provisioned. */
     ACTIVE,
     /** Provisioning failed or timed out (compensated). The user may register again. */
-    FAILED
+    FAILED,
+    /** Account deletion requested; other services are purging the user's data. The row is deleted when they finish. */
+    DELETING
 }

@@ -11,11 +11,15 @@ public final class Topics {
     public static final String USER_REGISTERED_TOPIC = "auth.user-registered";
     public static final String EMAIL_VERIFICATION_TOPIC = "auth.email-verification";
     public static final String USER_UPDATED_TOPIC = "auth.user-updated";
+    public static final String USER_DELETION_REQUESTED_TOPIC = "auth.user-deletion-requested";
     public static final String RECORD_CREATED_TOPIC = "catalog.record-created";
     public static final String MEDIA_UPDATED_TOPIC = "catalog.media-updated";
     public static final String SONGS_DELETED_TOPIC = "catalog.songs-deleted";
     public static final String LIKED_SONGS_CREATED_TOPIC = "playlist.liked-songs-created";
     public static final String LIKED_SONGS_FAILED_TOPIC = "playlist.liked-songs-failed";
+    public static final String PLAYLIST_USER_DATA_PURGED_TOPIC = "playlist.user-data-purged";
+    public static final String CATALOG_USER_DATA_PURGED_TOPIC = "catalog.user-data-purged";
+    public static final String STREAMING_USER_DATA_PURGED_TOPIC = "streaming.user-data-purged";
 
     /** Failed records end up on {@code <topic> + DLT_SUFFIX}. */
     public static final String DLT_SUFFIX = ".DLT";

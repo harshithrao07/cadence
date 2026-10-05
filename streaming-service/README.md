@@ -174,3 +174,5 @@ Required env:
 ## Boot Order
 
 discovery-service → config-server → streaming-service. Independent of every other backend service at startup; the only cross-service references are by ID (no Feign calls).
+
+**Account deletion:** consumes `auth.user-deletion-requested`, deletes the user's play history, and confirms with `streaming.user-data-purged` in the same transaction (idempotent).

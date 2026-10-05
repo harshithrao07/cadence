@@ -1,5 +1,8 @@
 package com.cadence.auth_service.controller;
 
+import org.springframework.web.bind.annotation.DeleteMapping;
+import com.cadence.auth_service.saga.UserDeletionSaga;
+import com.cadence.auth_service.model.User;
 import com.cadence.auth_service.dto.ApiResponseDTO;
 import com.cadence.auth_service.dto.user.UserProfileChangeDTO;
 import com.cadence.auth_service.dto.user.UserProfileDTO;
@@ -17,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/user")
 public class UserController {
     private final UserService userService;
+    private final UserDeletionSaga userDeletionSaga;
 
     @GetMapping(path = "/{userId}")
     public ResponseEntity<ApiResponseDTO<UserProfileDTO>> getUserProfile(@AuthenticationPrincipal UserDetails userDetails, @PathVariable("userId") String userId) {
@@ -26,6 +30,19 @@ public class UserController {
     @PutMapping(path = "/{userId}")
     public ResponseEntity<ApiResponseDTO<Void>> putUserProfile(@AuthenticationPrincipal UserDetails userDetails, @PathVariable("userId") String userId, @RequestBody UserProfileChangeDTO userProfileChangeDTO) {
         return userService.putUserProfile(userId, userProfileChangeDTO, userDetails.getUsername());
+    }
+
+    /**
+     * Deletes the caller's account. Answers 202: the user can no longer log in right away, and the data held by other
+     * services is purged asynchronously (account deletion saga) before the account itself is removed.
+     */
+    @DeleteMapping(path = "/me")
+    public ResponseEntity<ApiResponseDTO<Void>> deleteMyAccount(@AuthenticationPrincipal User user) {
+        if (!userDeletionSaga.request(user.getId())) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiResponseDTO<>(false, "User not found", null));
+        }
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(new ApiResponseDTO<>(true, "Your account is being deleted.", null));
     }
 
     @GetMapping(path = "/isAdmin")

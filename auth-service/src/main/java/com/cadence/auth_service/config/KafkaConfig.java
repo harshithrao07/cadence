@@ -28,6 +28,14 @@ public class KafkaConfig {
     }
 
     @Bean
+    public NewTopic userDeletionRequestedTopic() {
+        return TopicBuilder.name(Topics.USER_DELETION_REQUESTED_TOPIC)
+                .partitions(3)
+                .replicas(1)
+                .build();
+    }
+
+    @Bean
     public NewTopic emailVerificationTopic() {
         return TopicBuilder.name(Topics.EMAIL_VERIFICATION_TOPIC)
                 .partitions(3)

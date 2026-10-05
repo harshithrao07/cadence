@@ -268,3 +268,5 @@ Required env:
 ## Boot Order
 
 discovery-service → config-server → catalog-service. Doesn't depend on auth-service for startup; `user_replica` fills as auth-service publishes `auth.user-updated` events.
+
+**Account deletion:** consumes `auth.user-deletion-requested`, deletes the user's artist follows and the `user_replica` row, and confirms with `catalog.user-data-purged` in the same transaction (idempotent).

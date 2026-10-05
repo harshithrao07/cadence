@@ -16,6 +16,10 @@ public interface PlayHistoryRepository extends JpaRepository<PlayHistory, PlayHi
     @Query("DELETE FROM PlayHistory ph WHERE ph.id.songId IN :songIds")
     int deleteBySongIds(@Param("songIds") Collection<String> songIds);
 
+    @Modifying
+    @Query("DELETE FROM PlayHistory ph WHERE ph.id.userId = :userId")
+    int deleteByUserId(@Param("userId") String userId);
+
     List<PlayHistory> findByIdUserIdOrderByLastPlayedAtDesc(String userId, Pageable pageable);
 
     List<PlayHistory> findByIdUserIdOrderByPlayCountDesc(String userId, Pageable pageable);

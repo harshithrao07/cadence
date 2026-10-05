@@ -1,6 +1,6 @@
 # Database-per-service + Choreography SAGA — Plan
 
-Status: **in progress** on branch `feat/db-per-service-saga` — Phases 0–5 done (reseed left to you); Phase 6 (user deletion) next.
+Status: **all phases done** on branch `feat/db-per-service-saga` (reseed left to you; see Testing for what is still open).
 
 ## Why
 
@@ -63,8 +63,8 @@ Every event is wrapped in an envelope: `eventId` (UUID), `sagaId`, `type`, `vers
 | `playlist.liked-songs-failed` | playlist | auth | Saga A compensation |
 | ~~`user.activated`~~ | | | Not needed: activation publishes `auth.user-updated` (replica insert); email verification stays user-triggered |
 | `user.updated` | auth | catalog | Replica update |
-| `user.deletion-requested` | auth | playlist, catalog, streaming | Saga D |
-| `user.data-purged` | playlist, catalog, streaming | auth | Saga D confirmations |
+| `auth.user-deletion-requested` | auth | playlist, catalog, streaming | Saga D: account deletion requested |
+| `playlist.user-data-purged` / `catalog.user-data-purged` / `streaming.user-data-purged` | each participant | auth | Saga D confirmations |
 | `catalog.songs-deleted` | catalog | playlist, streaming | Saga B: songs deleted (record delete or edit), `{recordId, songIds}` |
 | ~~`catalog.record-deleted` / `catalog.artist-deleted` / `catalog.songs-purged`~~ | | | Dropped in Phase 4: forward-only cleanup, no confirmations; artist deletes are local |
 | ~~`auth.user-created`~~ | | | Replaced by `auth.user-registered` in Phase 3 |
@@ -106,14 +106,14 @@ already skip songs catalog no longer has, so leftover ids are invisible until pu
 
 `user.updated` → catalog updates `user_replica`. Plain replication.
 
-### Saga D — user deletion (last phase)
+### Saga D — account deletion (as built in Phase 6)
 
 ```
-auth: DELETE /api/v1/users/me → status DELETING, revoke tokens, outbox user.deletion-requested
-  → playlist: own playlists, liked_playlists, likes on others'  → user.data-purged
-  → catalog: artist_following rows, user_replica row            → user.data-purged
-  → streaming: play_history                                     → user.data-purged
-  → auth: 3 acks → hard-delete / anonymize user
+auth: DELETE /api/v1/user/me → status DELETING (no login / refresh) + outbox auth.user-deletion-requested
+  → playlist:  own playlists, own likes, others' likes of those playlists → playlist.user-data-purged
+  → catalog:   artist follows, user_replica row                          → catalog.user-data-purged
+  → streaming: play history                                               → streaming.user-data-purged
+  → auth: all 3 confirmations (user_deletions) → delete the user row; re-send if incomplete after 10 min
 ```
 
 Forward-only, no compensation.
@@ -236,19 +236,35 @@ record, which now also clears it from everyone's playlists and history).
 - [x] `cadenceDB` dropped (2026-10-05)
 - [x] Init script verified on a fresh MySQL volume (runs automatically, isolation holds)
 
-### Phase 6 — Saga D (user deletion)
+### Phase 6 — Saga D (account deletion)
 
-- [ ] `DELETE /api/v1/users/me`, `DELETING` status, token revocation
-- [ ] Purge consumers in playlist, catalog, streaming; `user.data-purged` acks
-- [ ] `user_deletion_saga` ack tracking → hard delete / anonymize
-- [ ] Frontend delete-account flow with confirmation
+- [x] `DELETE /api/v1/user/me` → 202; user `DELETING` (login, token refresh and auth-service calls refused at once)
+  + `auth.user-deletion-requested`
+- [x] playlist: own playlists (Liked Songs too), own likes, other users' likes of those playlists → `playlist.user-data-purged`
+- [x] catalog: artist follows + `user_replica` row → `catalog.user-data-purged`
+- [x] streaming: play history → `streaming.user-data-purged`
+- [x] auth: `user_deletions` records each confirmation; when all three are in, deletes verification tokens and the user
+  row (email can register again); the `user_deletions` row (no personal data) remains as the record
+- [x] `UserDeletionRetrySweeper` (every 5 min) re-sends requests still incomplete after 10 min (dead-lettered messages);
+  participants are idempotent
+- [x] Avatar uploads arriving for a non-ACTIVE user are ignored, so a late upload can't re-create the purged replica
+- [x] Frontend: "Delete Account" on the owner's profile, with a confirmation toast; clears the session afterwards
+
+Known limitations:
+
+- Access tokens are stateless JWTs validated by the gateway: for up to their 15-minute lifetime after deletion, a
+  client still holding one can call catalog / playlist / streaming and create rows for the deleted user id. Closing
+  this needs a token denylist at the gateway or a final reconciliation sweep.
+- Files in S3 (avatar, playlist covers) are not deleted.
 
 ### Testing (every phase)
 
-- [ ] Embedded Kafka / Testcontainers tests per saga: success, compensation or timeout, duplicate event ignored
-- [ ] Outbox relay tests: crash after send, two relay instances running concurrently
+- [x] Testcontainers tests per saga over real Kafka (auth runs the registration and deletion sagas against fake
+  participants): success, compensation / timeout / retry, duplicate event ignored
+- [x] Outbox relay tests: crash after send, concurrent relays, parked and blocked topics
+- [x] End-to-end checks against the compose stack after every phase
 - [ ] Re-run the `/discover` load test after the split
-- [ ] Update `TESTING.md` and the README architecture section
+- [ ] Browser walk-through of the frontend changes (signup 202, Google sign-in setup errors, delete account)
 
 ## Risks
 

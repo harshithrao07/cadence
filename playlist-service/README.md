@@ -218,3 +218,5 @@ Required env:
 ## Boot Order
 
 discovery-service → config-server → playlist-service. Feign clients to auth-service / catalog-service tolerate those services being absent (they fail per-call), but the `auth.user-registered` consumer will sit idle until auth-service publishes events.
+
+**Account deletion:** consumes `auth.user-deletion-requested`, deletes the user's own playlists (incl. Liked Songs), own likes and other users' likes of those playlists, and confirms with `playlist.user-data-purged` in the same transaction (idempotent).

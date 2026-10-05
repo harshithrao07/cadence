@@ -7,6 +7,9 @@ Owns user identity. Handles registration, password-based login, OAuth2 (Google) 
 - Register users with BCrypt-hashed passwords + strong-password policy
 - Authenticate password logins, issue access + refresh JWTs (15 min / 7 days)
 - OAuth2 authorization-code flow against Google; provision local user on first sign-in
+- Run the account deletion saga: `DELETE /api/v1/user/me` (202) locks the account (`DELETING`) and publishes
+  `auth.user-deletion-requested`; playlist, catalog and streaming purge the user's data and confirm; once all three
+  have, the user row is deleted (`user_deletions` keeps the record). Incomplete deletions are re-sent after 10 min.
 - Run the registration saga: users start `PENDING`, `auth.user-registered` asks playlist-service to provision a
   Liked Songs playlist, and the reply activates the user (or marks the registration `FAILED`). Only `ACTIVE` users
   get tokens: `POST /auth/v1/register` waits up to `cadence.registration.await-timeout` (5 s) and answers 201 with

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { User, Mail, Music, Edit2, X, AlertCircle, CheckCircle } from "lucide-react";
+import { User, Mail, Music, Edit2, X, AlertCircle, CheckCircle, Trash2 } from "lucide-react";
 import Image from "next/image";
 import api from "@/lib/api";
 import { UserProfileDTO } from "@/types/User";
@@ -13,9 +13,11 @@ import { toast } from "sonner";
 import ProfilePictureSelector from "@/components/auth/ProfilePictureSelector";
 import { MetadataDTO, HTTPMethod } from "@/types/Aws";
 import axios from "axios";
+import { usePlayer } from "@/context/PlayerContext";
 
 export default function UserProfilePage() {
   const router = useRouter();
+  const { resetPlayer } = usePlayer();
   const params = useParams();
   const profileId = params?.id as string;
 
@@ -80,6 +82,32 @@ export default function UserProfilePage() {
     } finally {
         setIsVerifyingEmail(false);
     }
+  };
+
+  // Account deletion is asynchronous (account deletion saga): the account is locked right away and removed once
+  // every service has purged the user's data.
+  const handleDeleteAccount = () => {
+    toast("Delete your account? Your playlists, likes, follows and listening history will be removed. This can't be undone.", {
+      duration: 10000,
+      action: {
+        label: "Delete account",
+        onClick: async () => {
+          try {
+            await api.delete("/api/v1/user/me");
+            resetPlayer();
+            localStorage.removeItem("auth_details");
+            toast.success("Your account is being deleted.");
+            router.push("/auth/login");
+          } catch (err: any) {
+            toast.error(err?.response?.data?.message || "Couldn't delete your account. Please try again.");
+          }
+        },
+      },
+      cancel: {
+        label: "Cancel",
+        onClick: () => {},
+      },
+    });
   };
 
   const handleUpdateProfile = async (newName: string, newFile: File | null, isDeletePic: boolean) => {
@@ -176,13 +204,22 @@ export default function UserProfilePage() {
             <div className="flex items-center justify-center md:justify-between gap-4">
                <h2 className="text-sm font-bold uppercase tracking-wider text-white/70 mb-2">Profile</h2>
                {isOwner && (
-                 <button 
-                   onClick={() => setShowEditModal(true)}
-                   className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-full text-sm font-medium transition"
-                 >
-                   <Edit2 className="w-4 h-4" />
-                   Edit Profile
-                 </button>
+                 <div className="flex items-center gap-2">
+                   <button 
+                     onClick={() => setShowEditModal(true)}
+                     className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-full text-sm font-medium transition"
+                   >
+                     <Edit2 className="w-4 h-4" />
+                     Edit Profile
+                   </button>
+                   <button
+                     onClick={handleDeleteAccount}
+                     className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-full text-sm font-medium text-red-400 transition"
+                   >
+                     <Trash2 className="w-4 h-4" />
+                     Delete Account
+                   </button>
+                 </div>
                )}
             </div>
             <h1 className="text-4xl sm:text-6xl md:text-7xl font-black mb-6 text-white tracking-tight">

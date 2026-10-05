@@ -3,6 +3,7 @@ package com.cadence.auth_service.integration;
 import com.cadence.auth_service.consumers.MediaUpdatedConsumer;
 import com.cadence.auth_service.model.Role;
 import com.cadence.auth_service.model.User;
+import com.cadence.auth_service.model.UserStatus;
 import com.cadence.auth_service.repository.UserRepository;
 import com.cadence.events.EventEnvelope;
 import com.cadence.events.MediaUpdatedEvent;
@@ -35,7 +36,7 @@ class MediaUpdatedConsumerIT extends BaseIntegrationTest {
     void setUp() {
         userRepository.deleteAll();
         userId = userRepository.save(User.builder()
-                .name("Alice").email("alice-media@example.com").role(Role.USER).build()).getId();
+                .name("Alice").email("alice-media@example.com").role(Role.USER).status(UserStatus.ACTIVE).build()).getId();
     }
 
     @Test
@@ -52,6 +53,18 @@ class MediaUpdatedConsumerIT extends BaseIntegrationTest {
 
         assertThat(userRepository.findById(userId).orElseThrow().getProfileUrl()).isNull();
         assertThat(publishedSnapshots()).noneMatch(s -> "https://cdn/evil".equals(s.profileUrl()));
+    }
+
+    @Test
+    void avatarOfAccountBeingDeleted_isIgnored_soReplicaIsNotRecreated() {
+        User user = userRepository.findById(userId).orElseThrow();
+        user.setStatus(UserStatus.DELETING);
+        userRepository.save(user);
+
+        consumer.handleMediaUpdated(avatar(userId, "https://cdn/late", userId, false));
+
+        assertThat(userRepository.findById(userId).orElseThrow().getProfileUrl()).isNull();
+        assertThat(publishedSnapshots()).isEmpty();
     }
 
     @Test

@@ -85,6 +85,8 @@ public class AuthenticationService {
                         ));
                 case FAILED -> ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                         .body(new ApiResponseDTO<>(false, "We couldn't finish setting up your account. Please try again.", null));
+                case DELETING -> ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(new ApiResponseDTO<>(false, "This account is being deleted. Please try again shortly.", null));
             };
         } catch (Exception e) {
             log.error("An exception has occurred {}", e.getMessage(), e);
@@ -113,6 +115,9 @@ public class AuthenticationService {
 
             if (user.get().getStatus() == UserStatus.PENDING) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiResponseDTO<>(false, "Your account is still being set up. Please try again in a moment.", null));
+            }
+            if (user.get().getStatus() == UserStatus.DELETING) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiResponseDTO<>(false, "This account is being deleted.", null));
             }
             if (user.get().getStatus() == UserStatus.FAILED) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiResponseDTO<>(false, "Account setup failed. Please register again.", null));

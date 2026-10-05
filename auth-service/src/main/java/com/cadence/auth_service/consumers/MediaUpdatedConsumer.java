@@ -1,5 +1,6 @@
 package com.cadence.auth_service.consumers;
 
+import com.cadence.auth_service.model.UserStatus;
 import com.cadence.auth_service.producers.UserUpdatedProducer;
 import com.cadence.auth_service.repository.UserRepository;
 import com.cadence.events.MediaUpdatedEvent;
@@ -36,6 +37,12 @@ public class MediaUpdatedConsumer {
                 return;
             }
             userRepository.findById(media.targetId()).ifPresentOrElse(user -> {
+                // An upload still in flight when the account is being deleted must not re-create the user's
+                // replica in catalog after it was purged.
+                if (user.getStatus() != UserStatus.ACTIVE) {
+                    log.info("Ignoring avatar update for user {} in status {}", user.getId(), user.getStatus());
+                    return;
+                }
                 user.setProfileUrl(media.url());
                 userRepository.save(user);
                 userUpdatedProducer.send(user);
