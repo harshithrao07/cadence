@@ -3,6 +3,7 @@ package com.cadence.auth_service.auth;
 import com.cadence.auth_service.utils.JwtUtil;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
@@ -30,6 +31,9 @@ public class JwtAuthenticationProvider implements AuthenticationProvider {
         }
 
         UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+        if (!userDetails.isEnabled()) {
+            throw new DisabledException("Account is not active");
+        }
         return new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
     }
 

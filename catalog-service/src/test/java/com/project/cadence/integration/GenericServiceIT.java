@@ -71,7 +71,7 @@ class GenericServiceIT extends BaseIntegrationTest {
     void setUp() {
         jdbcTemplate.execute("SET FOREIGN_KEY_CHECKS = 0");
         for (String table : List.of(
-                "artist_following", "users",
+                "artist_following", "user_replica",
                 "artist_created_songs", "artist_records", "song_genre",
                 "song", "record", "artist", "genre"
         )) {
@@ -243,7 +243,7 @@ class GenericServiceIT extends BaseIntegrationTest {
 
     private void seedUser(String userId) {
         jdbcTemplate.update(
-                "INSERT INTO users (id, name, email, profile_url) VALUES (?, ?, ?, ?)",
+                "INSERT INTO user_replica (id, name, email, profile_url, source_updated_at) VALUES (?, ?, ?, ?, NOW(6))",
                 userId, "Alice", "alice@example.com", null
         );
     }

@@ -21,4 +21,10 @@ public class PlaylistClientFallback implements PlaylistClient {
         log.warn("Circuit breaker open for playlist-service.searchPlaylists(key={}); returning empty", key);
         return new ApiResponseDTO<>(false, "playlist-service unavailable", List.of());
     }
+
+    @Override
+    public String getPlaylistOwner(String playlistId) {
+        log.warn("playlist-service unavailable for getPlaylistOwner({}); denying", playlistId);
+        return null;
+    }
 }

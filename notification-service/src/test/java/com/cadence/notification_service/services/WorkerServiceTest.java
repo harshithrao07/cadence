@@ -1,7 +1,7 @@
 package com.cadence.notification_service.services;
 
-import com.cadence.notification_service.events.EmailVerificationEvent;
-import com.cadence.notification_service.events.RecordCreatedEvent;
+import com.cadence.events.EmailVerificationEvent;
+import com.cadence.events.RecordCreatedEvent;
 import jakarta.mail.internet.MimeMessage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

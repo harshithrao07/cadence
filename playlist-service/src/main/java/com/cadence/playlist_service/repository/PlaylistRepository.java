@@ -5,7 +5,10 @@ import com.cadence.playlist_service.model.PlaylistVisibility;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -21,4 +24,8 @@ public interface PlaylistRepository extends JpaRepository<Playlist, String> {
             String name,
             Pageable pageable
     );
+
+    /** Playlists (including system ones like Liked Songs) containing any of the given songs. */
+    @Query("select distinct p from Playlist p join p.songIds s where s in :songIds")
+    List<Playlist> findAllContainingAnySong(@Param("songIds") Collection<String> songIds);
 }

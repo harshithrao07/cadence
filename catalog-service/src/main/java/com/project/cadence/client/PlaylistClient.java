@@ -4,6 +4,7 @@ import com.project.cadence.dto.ApiResponseDTO;
 import com.project.cadence.dto.playlist.PlaylistPreviewDTO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
@@ -17,6 +18,13 @@ public interface PlaylistClient {
                 ? response.data()
                 : List.of();
     }
+
+    /**
+     * Owner (user id) of a playlist, or null if it doesn't exist or playlist-service is unreachable. Callers use
+     * this for authorization, so null must mean "deny".
+     */
+    @GetMapping("/internal/playlists/{playlistId}/owner")
+    String getPlaylistOwner(@PathVariable("playlistId") String playlistId);
 
     @GetMapping("/api/v1/playlist/search")
     ApiResponseDTO<List<PlaylistPreviewDTO>> searchPlaylistsResponse(

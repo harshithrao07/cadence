@@ -4,12 +4,22 @@ import com.cadence.streaming_service.model.PlayHistory;
 import com.cadence.streaming_service.model.PlayHistoryId;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 
 public interface PlayHistoryRepository extends JpaRepository<PlayHistory, PlayHistoryId> {
+    @Modifying
+    @Query("DELETE FROM PlayHistory ph WHERE ph.id.songId IN :songIds")
+    int deleteBySongIds(@Param("songIds") Collection<String> songIds);
+
+    @Modifying
+    @Query("DELETE FROM PlayHistory ph WHERE ph.id.userId = :userId")
+    int deleteByUserId(@Param("userId") String userId);
+
     List<PlayHistory> findByIdUserIdOrderByLastPlayedAtDesc(String userId, Pageable pageable);
 
     List<PlayHistory> findByIdUserIdOrderByPlayCountDesc(String userId, Pageable pageable);

@@ -12,12 +12,39 @@ dotenv.config();
    CONFIG
    =============================== */
 
+// Connects as an admin (root by default) because it writes every service's schema directly.
 const DB_CONFIG = {
   host: process.env.DB_HOST || "localhost",
   port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || "password",
-  database: process.env.DB_NAME || "cadenceDB",
+};
+
+// Database-per-service: one schema per service (see docker/mysql/init/01-service-schemas.sh).
+const SCHEMAS = {
+  AUTH: process.env.AUTH_DB_NAME || "auth_db",
+  CATALOG: process.env.CATALOG_DB_NAME || "catalog_db",
+  PLAYLIST: process.env.PLAYLIST_DB_NAME || "playlist_db",
+  STREAMING: process.env.STREAMING_DB_NAME || "streaming_db",
+};
+
+// Schema-qualified table names.
+const T = {
+  users: `${SCHEMAS.AUTH}.users`,
+  email_verification_token: `${SCHEMAS.AUTH}.email_verification_token`,
+  genre: `${SCHEMAS.CATALOG}.genre`,
+  artist: `${SCHEMAS.CATALOG}.artist`,
+  record: `${SCHEMAS.CATALOG}.record`,
+  song: `${SCHEMAS.CATALOG}.song`,
+  artist_records: `${SCHEMAS.CATALOG}.artist_records`,
+  artist_created_songs: `${SCHEMAS.CATALOG}.artist_created_songs`,
+  song_genre: `${SCHEMAS.CATALOG}.song_genre`,
+  artist_following: `${SCHEMAS.CATALOG}.artist_following`,
+  user_replica: `${SCHEMAS.CATALOG}.user_replica`,
+  playlist: `${SCHEMAS.PLAYLIST}.playlist`,
+  playlist_songs: `${SCHEMAS.PLAYLIST}.playlist_songs`,
+  liked_playlists: `${SCHEMAS.PLAYLIST}.liked_playlists`,
+  play_history: `${SCHEMAS.STREAMING}.play_history`,
 };
 
 const s3Client = new S3Client({
@@ -142,21 +169,22 @@ async function uploadToS3(url, tableName, columnName, id) {
 
 async function truncateAll() {
   console.log("🧹 Truncating tables...");
+  // Also clears each service's outbox / processed_events, so no stale events are relayed after a reseed.
+  const tables = [
+    ...Object.values(T),
+    ...Object.values(SCHEMAS).flatMap(schema => [`${schema}.outbox`, `${schema}.processed_events`]),
+  ];
   await db.query("SET FOREIGN_KEY_CHECKS = 0");
-  await db.query("TRUNCATE song_genre");
-  await db.query("TRUNCATE liked_playlists");
-  await db.query("TRUNCATE playlist_songs");
-  await db.query("TRUNCATE play_history");
-  await db.query("TRUNCATE artist_following");
-  await db.query("TRUNCATE artist_created_songs");
-  await db.query("TRUNCATE artist_records");
-  await db.query("TRUNCATE email_verification_token");
-  await db.query("TRUNCATE song");
-  await db.query("TRUNCATE record");
-  await db.query("TRUNCATE artist");
-  await db.query("TRUNCATE genre");
-  await db.query("TRUNCATE playlist");
-  await db.query("TRUNCATE users");
+  for (const table of tables) {
+    const [schema, name] = table.split(".");
+    const [rows] = await db.query(
+      "SELECT 1 FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
+      [schema, name]
+    );
+    if (rows.length > 0) {
+      await db.query(`TRUNCATE ${table}`);
+    }
+  }
   await db.query("SET FOREIGN_KEY_CHECKS = 1");
 }
 
@@ -179,9 +207,16 @@ async function seedUsers() {
     ]);
   }
 
+  // Seeded users skip the registration saga, so they are ACTIVE straight away.
   await db.query(
-    `INSERT INTO users (id, email, name, password_hash, role, email_verified) VALUES ?`,
-    [users]
+    `INSERT INTO ${T.users} (id, email, name, password_hash, role, email_verified, status, registered_at) VALUES ?`,
+    [users.map(u => [...u, "ACTIVE", new Date()])]
+  );
+
+  // catalog-service's read-only copy of user profiles (normally kept in sync by auth.user-updated events).
+  await db.query(
+    `INSERT INTO ${T.user_replica} (id, name, email, profile_url, source_updated_at) VALUES ?`,
+    [users.map(([id, email, name]) => [id, name, email, null, new Date()])]
   );
 
   return users.map(u => u[0]);
@@ -209,7 +244,7 @@ async function seedGenres() {
   const genreRows = genreTypes.map(type => [uuid(), type]);
 
   await db.query(
-    `INSERT INTO genre (id, type) VALUES ?`,
+    `INSERT INTO ${T.genre} (id, type) VALUES ?`,
     [genreRows]
   );
 
@@ -239,7 +274,7 @@ async function seedArtists() {
   const artistRows = await Promise.all(promises);
 
   await db.query(
-    `INSERT INTO artist (id, name, profile_url, description)
+    `INSERT INTO ${T.artist} (id, name, profile_url, description)
      VALUES ?`,
     [artistRows]
   );
@@ -287,7 +322,7 @@ async function seedRecords(artistIds) {
   const recordRows = await Promise.all(promises);
 
   await db.query(
-    `INSERT INTO record (id, title, release_timestamp, cover_url, record_type)
+    `INSERT INTO ${T.record} (id, title, release_timestamp, cover_url, record_type)
      VALUES ?`,
     [recordRows]
   );
@@ -300,7 +335,7 @@ async function seedRecords(artistIds) {
 
     for (let i = 0; i < artists.length; i++) {
       await db.query(
-        `INSERT INTO artist_records (record_id, artist_id, artist_order)
+        `INSERT INTO ${T.artist_records} (record_id, artist_id, artist_order)
          VALUES (?, ?, ?)`,
         [record[0], artists[i], i]
       );
@@ -365,7 +400,7 @@ async function seedSongs(recordsWithMeta, artistIds, genreIds) {
       songIds.push(song.songId);
 
       await db.query(
-        `INSERT INTO song (id, title, song_url, total_duration, record_id, song_order)
+        `INSERT INTO ${T.song} (id, title, song_url, total_duration, record_id, song_order)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [
           song.songId,
@@ -388,7 +423,7 @@ async function seedSongs(recordsWithMeta, artistIds, genreIds) {
 
       for (let j = 0; j < finalArtists.length; j++) {
         await db.query(
-          `INSERT INTO artist_created_songs (song_id, artist_id, artist_order)
+          `INSERT INTO ${T.artist_created_songs} (song_id, artist_id, artist_order)
            VALUES (?, ?, ?)`,
           [song.songId, finalArtists[j], j]
         );
@@ -397,7 +432,7 @@ async function seedSongs(recordsWithMeta, artistIds, genreIds) {
       const genres = pick(genreIds, 1, 3);
       for (const genreId of genres) {
         await db.query(
-          `INSERT INTO song_genre (song_id, genre_id)
+          `INSERT INTO ${T.song_genre} (song_id, genre_id)
            VALUES (?, ?)`,
           [song.songId, genreId]
         );
@@ -417,7 +452,7 @@ async function seedFollowers(userIds, artistIds) {
     const followed = pick(artistIds, 1, 5);
     for (let i = 0; i < followed.length; i++) {
       await db.query(
-        `INSERT IGNORE INTO artist_following (user_id, artist_id, follow_order)
+        `INSERT IGNORE INTO ${T.artist_following} (user_id, artist_id, follow_order)
          VALUES (?, ?, ?)`,
         [userId, followed[i], i]
       );
@@ -434,7 +469,7 @@ async function seedPlayHistory(userIds, songIds) {
     const songs = pick(songIds, 10, 30);
     for (const songId of songs) {
       await db.query(
-        `INSERT INTO play_history
+        `INSERT INTO ${T.play_history}
          (user_id, song_id, play_count, created_at, last_played_at)
          VALUES (?, ?, ?, NOW(), NOW())`,
         [
@@ -470,7 +505,7 @@ async function seedPlaylists(userIds, songIds) {
   const playlistRows = await Promise.all(playlistPromises);
 
   await db.query(
-    `INSERT INTO playlist (id, name, cover_url, user_id, visibility, is_system, system_type, created_at, updated_at)
+    `INSERT INTO ${T.playlist} (id, name, cover_url, user_id, visibility, is_system, system_type, created_at, updated_at)
      VALUES ?`,
     [playlistRows]
   );
@@ -483,7 +518,7 @@ async function seedPlaylists(userIds, songIds) {
     );
     for (let i = 0; i < songs.length; i++) {
       await db.query(
-        `INSERT INTO playlist_songs (playlist_id, song_id, song_order)
+        `INSERT INTO ${T.playlist_songs} (playlist_id, song_id, song_order)
          VALUES (?, ?, ?)`,
         [playlistId, songs[i], i]
       );
@@ -510,7 +545,7 @@ async function seedLikedSongsPlaylists(userIds) {
   });
 
   await db.query(
-    `INSERT INTO playlist (id, name, cover_url, user_id, visibility, is_system, system_type, created_at, updated_at)
+    `INSERT INTO ${T.playlist} (id, name, cover_url, user_id, visibility, is_system, system_type, created_at, updated_at)
      VALUES ?`,
     [playlists]
   );
@@ -525,7 +560,7 @@ async function seedLikedPlaylists(userIds, playlistIds) {
     for (let i = 0; i < liked.length; i++) {
       const playlistId = liked[i];
       await db.query(
-        `INSERT INTO liked_playlists (user_id, playlist_id, like_order)
+        `INSERT INTO ${T.liked_playlists} (user_id, playlist_id, like_order)
          VALUES (?, ?, ?)`,
         [userId, playlistId, i]
       );

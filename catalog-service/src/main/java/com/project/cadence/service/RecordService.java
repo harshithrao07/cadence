@@ -8,16 +8,19 @@ import com.project.cadence.dto.record.RecordPreviewDTO;
 import com.project.cadence.dto.record.UpsertRecordResponseDTO;
 import com.project.cadence.dto.song.SongResponseDTO;
 import com.project.cadence.dto.song.UpsertSongDTO;
-import com.project.cadence.events.RecordCreatedEvent;
+import com.cadence.events.RecordCreatedEvent;
 import com.project.cadence.model.*;
 import com.project.cadence.model.Record;
 import com.project.cadence.producers.RecordCreatedProducer;
+import com.project.cadence.producers.SongsDeletedProducer;
 import com.project.cadence.repository.ArtistRepository;
 import com.project.cadence.repository.GenreRepository;
 import com.project.cadence.repository.RecordRepository;
 import com.project.cadence.repository.SongRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -42,6 +45,7 @@ public class RecordService {
     private final SongRepository songRepository;
     private final AwsService awsService;
     private final RecordCreatedProducer producer;
+    private final SongsDeletedProducer songsDeletedProducer;
     private final NamedParameterJdbcTemplate namedParameterJdbcTemplate;
 
     @Transactional
@@ -119,9 +123,17 @@ public class RecordService {
                     })
                     .collect(Collectors.toList());
 
+            // Songs left out of an edit are deleted (orphanRemoval); other services must forget them.
+            Set<String> keptSongIds = songs.stream().map(Song::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+            List<String> droppedSongIds = record.getSongs().stream()
+                    .map(Song::getId)
+                    .filter(id -> id != null && !keptSongIds.contains(id))
+                    .toList();
+
             record.getSongs().clear();
             record.getSongs().addAll(songs);
             Record savedRecord = recordRepository.save(record);
+            songsDeletedProducer.send(savedRecord.getId(), droppedSongIds);
 
             List<String> artistNames = savedRecord.getArtists().stream()
                     .map(Artist::getName)
@@ -182,13 +194,17 @@ public class RecordService {
             String coverKey = record.getCoverUrl() != null
                     ? awsService.extractKeyFromUrl(record.getCoverUrl())
                     : null;
+            List<String> songIds = record.getSongs().stream().map(Song::getId).toList();
 
             recordRepository.delete(record);
+            songsDeletedProducer.send(recordId, songIds);
 
-            songKeys.forEach(awsService::deleteObject);
+            // Files go only once the delete has committed, so a rollback can't leave rows pointing at missing files.
+            List<String> objectKeys = new ArrayList<>(songKeys);
             if (coverKey != null) {
-                awsService.deleteObject(coverKey);
+                objectKeys.add(coverKey);
             }
+            runAfterCommit(() -> objectKeys.forEach(awsService::deleteObject));
 
             return ResponseEntity.ok(
                     new ApiResponseDTO<>(true, "Successfully deleted the record", null)
@@ -316,7 +332,7 @@ public class RecordService {
                 """
                         SELECT DISTINCT u.email
                         FROM artist_following af
-                        JOIN users u ON u.id = af.user_id
+                        JOIN user_replica u ON u.id = af.user_id
                         WHERE af.artist_id IN (:artistIds)
                         """,
                 new MapSqlParameterSource("artistIds", artistIds),
@@ -324,4 +340,17 @@ public class RecordService {
         );
     }
 
+
+    private static void runAfterCommit(Runnable action) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
 }

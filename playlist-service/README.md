@@ -7,7 +7,7 @@ Owns user playlists. Standard CRUD plus the special "Liked Songs" system playlis
 - CRUD for user-created playlists (visibility: PUBLIC / PRIVATE)
 - Add / remove songs from a playlist (preserving insertion order via `@OrderColumn`)
 - Like / unlike playlists; preserve the order in which a user liked them
-- Auto-create a `LIKED_SONGS` system playlist for each new user (consumed from `user_created` event)
+- Auto-create a `LIKED_SONGS` system playlist for each new user (registration saga participant: consumes `auth.user-registered`, replies `playlist.liked-songs-created` / `playlist.liked-songs-failed`)
 - Search playlists by name (PUBLIC only)
 - Resolve song details + owner previews via Feign clients to catalog-service and auth-service
 
@@ -18,24 +18,22 @@ flowchart TB
     gw[gateway-service] --> playlist[playlist-service<br/>:8082]
 
     playlist --> pc[PlaylistController]
+    playlist --> ipc[InternalPlaylistController<br/>playlist owner]
     pc --> ps[PlaylistService]
 
-    ps --> pr[PlaylistRepository]
-    ps --> lpr[LikedPlaylistRepository]
-    ps --> upc[UserPreviewClient<br/>Feign]
-    ps --> cpc[CatalogPreviewClient<br/>Feign]
+    ps -.->|Feign: user previews| auth[auth-service]
+    ps -.->|Feign: song previews| catalog[catalog-service]
 
-    pr --> mysql[(MySQL<br/>playlist<br/>liked_playlists<br/>playlist_songs)]
-    lpr --> mysql
+    ps & ipc --> db[(playlist_db<br/>playlist · playlist_songs · liked_playlists<br/>outbox · processed_events)]
 
-    upc -.via Eureka.- auth[auth-service]
-    cpc -.via Eureka.- catalog[catalog-service]
+    in1[[auth.user-registered]] --> reg[UserRegisteredConsumer<br/>create Liked Songs] --> db
+    in2[[catalog.songs-deleted]] --> sd[SongsDeletedConsumer<br/>remove ids from playlists] --> db
+    in3[[catalog.media-updated]] --> cover[MediaUpdatedConsumer<br/>apply cover] --> db
+    in4[[auth.user-deletion-requested]] --> purge[UserDeletionRequestedConsumer<br/>playlists + likes] --> db
 
-    kafka[[user_created topic]]
-    kafka -->|UserCreatedConsumer| ucc[UserCreatedConsumer]
-    ucc -->|createLikedSongsPlaylistForUser| ps
-
-    auth -.publishes.-> kafka
+    db --> relay[[outbox relay]]
+    relay --> out1[[playlist.liked-songs-created / -failed]]
+    relay --> out2[[playlist.user-data-purged]]
 ```
 
 ## Like Flow (composite-key tracking)
@@ -79,12 +77,12 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Auth as auth-service
-    participant K as Kafka<br/>user_created
-    participant UC as UserCreatedConsumer
+    participant K as Kafka<br/>auth.user-registered
+    participant UC as UserRegisteredConsumer
     participant PS as PlaylistService
     participant DB as MySQL
 
-    Auth->>K: publish UserCreatedEvent(userId)
+    Auth->>K: publish UserRegisteredEvent(userId)
     K-->>UC: deliver to playlist-service
     UC->>PS: createLikedSongsPlaylistForUser(userId)
     PS->>DB: existsById("LIKED_SONGS_<userId>")?
@@ -159,7 +157,7 @@ Three things worth noting about the data model:
 
 | Direction | Topic | Event | Group ID |
 |---|---|---|---|
-| Consumes | `user_created` | `UserCreatedEvent { userId }` | `playlist-service` |
+| Consumes | `auth.user-registered` | `UserRegisteredEvent { userId }` | `playlist-service` |
 
 Consumer auto-startup is enabled in production; tests disable it via `spring.kafka.listener.auto-startup=false` so they don't try to bind to a non-running broker.
 
@@ -186,7 +184,7 @@ From `centralconfigs/playlist-service/playlist-service.properties`:
 - `spring.kafka.consumer.group-id=playlist-service`
 - `spring.kafka.consumer.value-deserializer=...JsonDeserializer`
 - `spring.kafka.consumer.properties.spring.json.trusted.packages=*`
-- `spring.kafka.consumer.properties.spring.json.value.default.type=com.cadence.playlist_service.events.UserCreatedEvent`
+- `spring.kafka.consumer.properties.spring.json.value.default.type=com.cadence.playlist_service.events.UserRegisteredEvent`
 
 ## Testing
 
@@ -217,4 +215,6 @@ Required env:
 
 ## Boot Order
 
-discovery-service → config-server → playlist-service. Feign clients to auth-service / catalog-service tolerate those services being absent (they fail per-call), but the `user_created` consumer will sit idle until auth-service publishes events.
+discovery-service → config-server → playlist-service. Feign clients to auth-service / catalog-service tolerate those services being absent (they fail per-call), but the `auth.user-registered` consumer will sit idle until auth-service publishes events.
+
+**Account deletion:** consumes `auth.user-deletion-requested`, deletes the user's own playlists (incl. Liked Songs), own likes and other users' likes of those playlists, and confirms with `playlist.user-data-purged` in the same transaction (idempotent).

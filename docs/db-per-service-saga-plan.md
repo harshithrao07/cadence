@@ -1,0 +1,273 @@
+# Database-per-service + Choreography SAGA — Plan
+
+Status: **all phases done** on branch `feat/db-per-service-saga` (reseed left to you; see Testing for what is still open).
+
+## Why
+
+All services currently share one MySQL database (`cadenceDB`), and the boundaries leak:
+
+- catalog-service reads/writes auth-service's `users` and `artist_following` tables via raw `JdbcTemplate` SQL (follow/unfollow, followers list, follower counts, new-release follower emails).
+- auth-service maps catalog-service's `artist` table as its own entity.
+- Events (`user_created`, `email_verification`, `record_created`) are published inside the DB transaction with no outbox, so a Kafka outage or a rollback desyncs services.
+
+## Decisions
+
+| Topic | Decision |
+|---|---|
+| Saga style | **Choreography** over Kafka, no orchestrator |
+| Follow ownership | `artist_following` moves to **catalog-service**; catalog keeps a `user_replica` |
+| How `user_replica` syncs | **Domain events via transactional outbox** (not Feign, not CDC on the `users` table) |
+| DB layout | **One MySQL, 4 schemas** (`auth_db`, `catalog_db`, `playlist_db`, `streaming_db`), one DB user per service granted only its own schema |
+| Existing data | **Drop and reseed** with an updated `cadence-seed` |
+| User deletion (Saga D) | Included as the **last phase**; event contract defined early |
+| Outbox relay | **Polling** relay; columns laid out Debezium-outbox-router-compatible so CDC can replace it later |
+| Event classes | Shared **`cadence-events`** Maven module |
+| Artist / record deletes | **Soft delete** (`DELETING`), hard delete after playlist + streaming confirm clean-up |
+
+### Why choreography
+
+Both sagas are short: registration has 2 participants and 1 compensation; catalog deletes are a forward-only fan-out. Kafka and choreographed events already exist (`user_created` → playlist). Revisit orchestration only if a ≥4-step flow with real rollbacks appears (e.g. paid subscriptions) — and then only for that flow.
+
+Visibility mitigations: every event carries a `sagaId`, it is put in the logging MDC, and the initiating service tracks the outcome (e.g. `users.status`).
+
+### Why catalog owns follows
+
+Every follow operation (follow/unfollow, counts, followers list, release emails, cleanup on artist delete) becomes local to catalog. The only replicated data is a few rarely-changing user fields. The alternative (auth owns follows) would need an artist replica in auth *plus* sync calls back from catalog on the hottest read path (artist page).
+
+### Why outbox events for `user_replica`
+
+- Feign-on-demand: follow/followers break when auth is down, N calls on hot paths.
+- CDC on `users`: couples catalog to auth's table schema and leaks fields like `password_hash`.
+- Outbox events: auth controls the contract, nothing is lost, catalog works when auth is down, and it's the same machinery the sagas need anyway.
+
+## Target ownership
+
+| Service | Schema | Tables |
+|---|---|---|
+| auth-service | `auth_db` | `users` (+ `status`: `PENDING`/`ACTIVE`/`FAILED`/`DELETING`), `email_verification_token`, `outbox`, `processed_events`, `user_deletion_saga` |
+| catalog-service | `catalog_db` | `artist`, `record`, `song`, `genre`, `artist_records`, `artist_created_songs`, `song_genre`, `artist_following`, `user_replica`, `pending_deletions`, `outbox`, `processed_events` |
+| playlist-service | `playlist_db` | `playlist`, `playlist_songs`, `liked_playlists`, `outbox`, `processed_events` |
+| streaming-service | `streaming_db` | `play_history`, `outbox`, `processed_events` |
+| notification-service | — | (Kafka consumer only) |
+
+**Rule:** no service reads another service's tables. Cross-service data comes from a local replica (events), a Feign call (read-time enrichment only), or a saga (multi-service writes).
+
+## Event catalog
+
+Every event is wrapped in an envelope: `eventId` (UUID), `sagaId`, `type`, `version`, `occurredAt`, `payload`.
+
+| Topic | Producer | Consumers | Purpose |
+|---|---|---|---|
+| `auth.user-registered` | auth | playlist | Saga A step 1 |
+| `playlist.liked-songs-created` | playlist | auth | Saga A success |
+| `playlist.liked-songs-failed` | playlist | auth | Saga A compensation |
+| ~~`user.activated`~~ | | | Not needed: activation publishes `auth.user-updated` (replica insert); email verification stays user-triggered |
+| `user.updated` | auth | catalog | Replica update |
+| `auth.user-deletion-requested` | auth | playlist, catalog, streaming | Saga D: account deletion requested |
+| `playlist.user-data-purged` / `catalog.user-data-purged` / `streaming.user-data-purged` | each participant | auth | Saga D confirmations |
+| `catalog.songs-deleted` | catalog | playlist, streaming | Saga B: songs deleted (record delete or edit), `{recordId, songIds}` |
+| ~~`catalog.record-deleted` / `catalog.artist-deleted` / `catalog.songs-purged`~~ | | | Dropped in Phase 4: forward-only cleanup, no confirmations; artist deletes are local |
+| ~~`auth.user-created`~~ | | | Replaced by `auth.user-registered` in Phase 3 |
+| `auth.user-updated` | auth | catalog | User snapshot → `user_replica`; published on activation and profile changes |
+| `catalog.media-updated` | catalog | auth, playlist | Phase 2: avatar / playlist cover stored or removed |
+| `auth.email-verification` | auth | notification | Existing flow, moved onto the outbox |
+| `catalog.record-created` | catalog | notification | Existing flow, moved onto the outbox |
+
+Every topic gets a `.DLT` dead-letter topic.
+
+## Sagas
+
+### Saga A — registration
+
+```
+auth: create user (PENDING) + outbox auth.user-registered
+  → playlist: create "Liked Songs" (idempotent) + outbox playlist.liked-songs-created | playlist.liked-songs-failed
+  → auth: user ACTIVE + outbox auth.user-updated   | user FAILED (compensation)
+       → catalog: insert user_replica
+       → notification: verification / welcome mail
+```
+
+- Login / JWT refused unless `ACTIVE`. Both email signup and OAuth.
+- Timeout sweeper: `PENDING` older than 5 minutes → `FAILED`.
+
+### Saga B — song deletion (as built in Phase 4)
+
+```
+catalog: delete record, or edit a record dropping songs (orphanRemoval) + outbox catalog.songs-deleted {recordId, songIds}
+  → playlist:  remove the ids from every playlist (through the entity, so song_order stays gap-free)
+  → streaming: delete play_history rows for the ids
+catalog: S3 objects of a deleted record are removed after the delete commits
+```
+
+Forward-only: nothing to compensate; consumers are idempotent and retry, then dead-letter. No confirmations: reads
+already skip songs catalog no longer has, so leftover ids are invisible until purged (~1 s).
+
+### Saga C — profile replication
+
+`user.updated` → catalog updates `user_replica`. Plain replication.
+
+### Saga D — account deletion (as built in Phase 6)
+
+```
+auth: DELETE /api/v1/user/me → status DELETING (no login / refresh) + outbox auth.user-deletion-requested
+  → playlist:  own playlists, own likes, others' likes of those playlists → playlist.user-data-purged
+  → catalog:   artist follows, user_replica row                          → catalog.user-data-purged
+  → streaming: play history                                               → streaming.user-data-purged
+  → auth: all 3 confirmations (user_deletions) → delete the user row; re-send if incomplete after 10 min
+```
+
+Forward-only, no compensation.
+
+### Not sagas
+
+- Follow / unfollow: local to catalog after Phase 2.
+- Add song to playlist: local write after a Feign existence check; Saga B cleans up later deletions.
+
+## Phases
+
+### Phase 0 — shared module and build changes
+
+- [x] `cadence-events` module: event records, envelope, topic constants
+- [x] Root aggregator `pom.xml` + Maven wrapper at repo root
+- [x] Docker build context = repo root for services that depend on `cadence-events`; root `.dockerignore`
+- [x] `compose.yaml`, `ci.yml`, `run-all-tests.sh` updated
+- [x] Delete duplicated event classes and `Topics` copies in auth, catalog, playlist and notification
+
+### Phase 1 — reliable messaging (no behaviour change)
+
+Implemented as a shared Spring Boot auto-configuration library, **`cadence-messaging`**, rather than per-service code:
+
+- [x] `outbox` table (`id`, `event_id`, `saga_id`, `aggregate_type`, `aggregate_id`, `type`, `topic`, `payload`, `created_at`, `sent_at`, `failed_at`, `last_error`) — entity in the library, created by each JPA service's `ddl-auto`
+- [x] `OutboxPublisher` (`Propagation.MANDATORY`; a failure marks the caller's transaction rollback-only even if the caller swallows it)
+- [x] `PollingOutboxRelay`: own single-thread scheduler, 500 ms, `FOR UPDATE SKIP LOCKED`, batch 100; hourly cleanup of rows sent > 7 days ago
+  - retriable send failure (broker down, missing topic) blocks only that topic for the batch, preserving its order while other topics flow; retried forever
+  - permanent Kafka error (invalid topic, record too large) parks the row (`failed_at`, `last_error`); set `failed_at = NULL` to retry
+  - `max.block.ms` capped at the 10 s send timeout so a missing topic can't stall the relay for 60 s per attempt
+- [x] `processed_events(handler, event_id)` + `IdempotentEventHandler`, written in the consumer's transaction
+- [x] `DefaultErrorHandler`: 4 exponential retries (1 s → 10 s), then `<topic>.DLT`; `EventDecodingException` skips retries
+- [x] Existing producers write to the outbox; every topic now carries `EventEnvelope` JSON as a string value
+- [x] `sagaId` / `eventId` in the logging MDC (`logging.pattern.level` in the global config)
+
+Decisions made while implementing:
+
+- **Topics renamed** with the format change so old and new formats never share a topic: `user_created` → `auth.user-created`, `email_verification` → `auth.email-verification`, `record_created` → `catalog.record-created`. Convention: `<producing-service>.<event>`. (A first attempt used `user.created`, which Kafka rejects next to an existing `user_created`: `.` and `_` collide in topic names.)
+- **`EventCodec` uses its own Jackson mapper**, not the service's, so the wire contract can't drift with one service's Jackson config; it ignores unknown fields for forward compatibility.
+- **notification-service has no database**, so it decodes envelopes and joins the saga context but has no inbox: a redelivered event can send a duplicate email.
+- **streaming-service** gets the library in Phase 4, when it first produces / consumes events.
+
+### Phase 2 — follows move to catalog (shared DB still)
+
+- [x] `UserReplica` entity + `UserUpdatedConsumer` on `auth.user-updated` (upsert; older snapshots ignored via `source_updated_at`)
+- [x] No `users` reads left in catalog (`ArtistService.userExists`, `getArtistFollowers`, `GenericService.userExists`, `RecordService.getFollowerEmails` use `user_replica`)
+- [x] `artist_following` mapped as catalog's `ArtistFollow` entity; catalog `GET /internal/users/{id}/followed-artists`
+- [x] auth: `Artist` entity and `User.artistFollowing` removed; profile uses Feign `CatalogClient` (fallback: empty list)
+- [x] auth publishes `auth.user-updated` on registration (password + OAuth), name change and avatar change; `POST /internal/users/republish` backfills the replica
+
+Found while implementing: catalog's **file uploads also wrote other services' tables** (`users.profile_url`,
+`playlist.cover_url`), via SQL built from the client's file name. That code also allowed SQL injection and
+unauthorized writes; fixed first in its own commit (`UploadTarget` allow-list + `UploadAuthorizer`). Then:
+
+- [x] Decision: **event to the owner.** catalog stores the file in S3 and publishes `catalog.media-updated`
+  (`MediaUpdatedEvent{target, targetId, url, requestedBy, requestedByAdmin}`); auth applies avatars, playlist applies
+  covers, each re-checking ownership
+- [x] catalog authorizes **before** storing the file, so an unauthorized upload can't overwrite someone's image in S3:
+  playlist ownership via Feign `GET /internal/playlists/{id}/owner` (denied if playlist-service is down)
+
+### Phase 3 — Saga A (registration)
+
+- [x] `users.status` (`PENDING` / `ACTIVE` / `FAILED`, existing rows default `ACTIVE`) + `registered_at`; email signup and OAuth start the saga with `auth.user-registered`
+- [x] playlist creates Liked Songs idempotently and replies `playlist.liked-songs-created` (same sagaId) or `playlist.liked-songs-failed` (invalid request)
+- [x] auth activates (and publishes `auth.user-updated`, so the replica only holds active users) or fails the user; a late success still activates
+- [x] Only `ACTIVE` users get tokens: password login and Google sign-in check status; `User.isEnabled()` gates token refresh
+- [x] `RegistrationTimeoutSweeper`: `PENDING` > 5 min → `FAILED` (covers dead-lettered requests that never get a reply)
+- [x] A `FAILED` user may register again (same row, new saga)
+- [x] `register` waits up to 5 s for the saga: 201 + tokens (usual case, unchanged frontend path), 202 without tokens (still pending), 503 (failed). Signup page handles 202; login page explains Google sign-in redirects with `?error=account_setup_pending|failed`
+
+Decisions made while implementing:
+
+- **Synchronous facade over the async saga** rather than making every client poll: the saga normally finishes in ~1 s, so the common path keeps its old contract.
+- **No `user.activated` topic**: activation publishes the existing `auth.user-updated` snapshot.
+- auth's integration tests run the saga over real Kafka against a `FakePlaylistParticipant` test listener.
+- **Found by the end-to-end run:** inside an HTTP request, Spring's open-in-view keeps one EntityManager for the
+  whole request, so the wait loop kept reading the cached PENDING user and every web signup answered 202. The loop now
+  reads `users.status` with a query (`findStatusById`); `RegistrationSagaIT` reproduces a request-bound EntityManager.
+- **Kafka metadata refresh lowered to 30 s** (`spring.kafka.properties.metadata.max.age.ms`, global config): a topic
+  grown to 3 partitions by a `NewTopic` bean went unnoticed by an already-running consumer for up to 5 minutes.
+
+### Phase 4 — Saga B (song deletion)
+
+Re-decided at the start of the phase: **hard delete + cleanup event** instead of the planned soft delete. Every read
+that shows songs (playlist contents, discover, trending, history) already resolves ids through catalog's database and
+skips missing ones, so a deleted song disappears immediately; soft delete would have meant a status filter on every
+catalog query plus confirmation tracking, for a state nothing reads.
+
+- [x] `catalog.songs-deleted {recordId, songIds}` from `deleteRecord` **and** from record edits that drop songs
+  (found while implementing: `upsertNewRecord` replaces the song list and orphanRemoval silently deleted songs)
+- [x] playlist-service `SongsDeletedConsumer`: removes ids from all playlists incl. Liked Songs, re-numbering `song_order`
+- [x] streaming-service `SongsDeletedConsumer`: deletes `play_history` for the ids; streaming joins cadence-messaging
+  (root-context Docker build, Kafka config, `KAFKA_URL` in compose)
+- [x] `deleteRecord` deletes S3 objects only after commit (previously mid-transaction, so a rollback lost files)
+- [x] Artist deletes stay local: since Phase 2 everything they touch (`artist_records`, `artist_created_songs`,
+  `artist_following`) is catalog's, and no other service stores artist ids
+
+- Found by the tests: removing several songs from an `@OrderColumn` list in place made Hibernate shift rows one
+  UPDATE at a time, briefly duplicating a `(playlist_id, song_id)` pair (unique constraint). The purge replaces the
+  list instead, so Hibernate deletes and re-inserts the rows.
+
+Not done: audio files of songs dropped by an edit are still left in S3 (pre-existing; no code path deletes them).
+Flagged separately: catalog's record/artist write endpoints have no admin check (any logged-in user can delete a
+record, which now also clears it from everyone's playlists and history).
+
+### Phase 5 — physical split
+
+- [x] `docker/mysql/init/01-service-schemas.sh`: 4 schemas + 4 users (`auth_svc`, …), each granted only its own schema;
+  a shell script (not .sql) so passwords come from the mysql container's environment; idempotent, so it can also be
+  run by hand on an existing volume. `.gitattributes` keeps `*.sh` LF so it runs in the Linux container.
+- [x] Per-service `DATASOURCE_URL` / `DATASOURCE_USERNAME` / `DATASOURCE_PASSWORD` in `compose.yaml` (dev defaults,
+  overridable via `.env`); config-server already read `${DATASOURCE_*}`, so no service config changed.
+  `env.properties` is only for running a service outside Docker (README explains which schema/user to use).
+- [x] `compose.yaml` mounts the init script; `MYSQL_DATABASE: cadenceDB` removed
+- [x] `cadence-seed`: connects as admin, schema-qualifies every table, fills `user_replica`, users `ACTIVE`,
+  truncates each schema's `outbox` / `processed_events` too; README updated
+- [x] Verified: cross-schema access fails with a permission error (catalog_svc → `auth_db.users`: `SELECT command
+  denied`; playlist_svc → `streaming_db`: `Access denied`); each service connects only as its own user; registration
+  works across the split (auth_db → playlist_db → catalog_db)
+- [x] Seed checked against the live schemas (every INSERT column exists, no required column omitted); running it is left to you, since it calls Deezer/Jamendo and uploads to S3: `cd cadence-seed && node seed.js`
+- [x] `cadenceDB` dropped (2026-10-05)
+- [x] Init script verified on a fresh MySQL volume (runs automatically, isolation holds)
+
+### Phase 6 — Saga D (account deletion)
+
+- [x] `DELETE /api/v1/user/me` → 202; user `DELETING` (login, token refresh and auth-service calls refused at once)
+  + `auth.user-deletion-requested`
+- [x] playlist: own playlists (Liked Songs too), own likes, other users' likes of those playlists → `playlist.user-data-purged`
+- [x] catalog: artist follows + `user_replica` row → `catalog.user-data-purged`
+- [x] streaming: play history → `streaming.user-data-purged`
+- [x] auth: `user_deletions` records each confirmation; when all three are in, deletes verification tokens and the user
+  row (email can register again); the `user_deletions` row (no personal data) remains as the record
+- [x] `UserDeletionRetrySweeper` (every 5 min) re-sends requests still incomplete after 10 min (dead-lettered messages);
+  participants are idempotent
+- [x] Avatar uploads arriving for a non-ACTIVE user are ignored, so a late upload can't re-create the purged replica
+- [x] Frontend: "Delete Account" on the owner's profile, with a confirmation toast; clears the session afterwards
+
+Known limitations:
+
+- Access tokens are stateless JWTs validated by the gateway: for up to their 15-minute lifetime after deletion, a
+  client still holding one can call catalog / playlist / streaming and create rows for the deleted user id. Closing
+  this needs a token denylist at the gateway or a final reconciliation sweep.
+- Files in S3 (avatar, playlist covers) are not deleted.
+
+### Testing (every phase)
+
+- [x] Testcontainers tests per saga over real Kafka (auth runs the registration and deletion sagas against fake
+  participants): success, compensation / timeout / retry, duplicate event ignored
+- [x] Outbox relay tests: crash after send, concurrent relays, parked and blocked topics
+- [x] End-to-end checks against the compose stack after every phase
+- [ ] Re-run the `/discover` load test after the split
+- [ ] Browser walk-through of the frontend changes (signup 202, Google sign-in setup errors, delete account)
+
+## Risks
+
+- Phase 0 changes the build (CI, Docker) — land it as its own change.
+- Phases 1–4 run on the shared DB so the system keeps working; Phase 5 should be mostly config, and the grants check catches anything missed.
+- Saga A changes login behaviour — test both email and OAuth signup.

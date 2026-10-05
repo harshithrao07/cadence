@@ -1,5 +1,8 @@
 package com.cadence.auth_service.auth;
 
+import com.cadence.auth_service.model.UserStatus;
+import com.cadence.auth_service.saga.RegistrationSaga;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.cadence.auth_service.dto.auth.AuthenticationResponseDTO;
 import com.cadence.auth_service.model.User;
@@ -21,6 +24,10 @@ import java.io.IOException;
 public class CustomOAuth2SuccessHandler implements AuthenticationSuccessHandler {
     private final OAuthUserService oAuthUserService;
     private final JwtUtil jwtUtil;
+    private final RegistrationSaga registrationSaga;
+
+    @Value("${cadence.registration.await-timeout:PT5S}")
+    private java.time.Duration registrationAwaitTimeout;
     @Value("${frontend.url}")
     private String frontendUrl;
 
@@ -32,6 +39,15 @@ public class CustomOAuth2SuccessHandler implements AuthenticationSuccessHandler 
         String picture = oAuth2User.getAttribute("picture");
 
         User user = oAuthUserService.findOrCreateUser(email, name, picture);
+
+        UserStatus status = user.getStatus() == UserStatus.ACTIVE
+                ? UserStatus.ACTIVE
+                : registrationSaga.awaitOutcome(user.getId(), registrationAwaitTimeout);
+        if (status != UserStatus.ACTIVE) {
+            String reason = status == UserStatus.PENDING ? "account_setup_pending" : "account_setup_failed";
+            response.sendRedirect(frontendUrl + "/auth/login?error=" + reason);
+            return;
+        }
 
         String accessToken = jwtUtil.generateToken(user, 15);
         String refreshToken = jwtUtil.generateToken(user, 7L * 24 * 60);

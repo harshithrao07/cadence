@@ -330,7 +330,7 @@ public class ArtistService {
             List<UserPreviewDTO> followers = jdbcTemplate.query(
                     """
                             SELECT u.id, u.name, u.profile_url
-                            FROM users u
+                            FROM user_replica u
                             JOIN artist_following af ON af.user_id = u.id
                             WHERE af.artist_id = ?
                             ORDER BY af.follow_order ASC
@@ -350,9 +350,27 @@ public class ArtistService {
         }
     }
 
+    public List<ArtistPreviewDTO> getFollowedArtists(String userId) {
+        return jdbcTemplate.query(
+                """
+                        SELECT a.id, a.name, a.profile_url
+                        FROM artist_following af
+                        JOIN artist a ON a.id = af.artist_id
+                        WHERE af.user_id = ?
+                        ORDER BY af.follow_order ASC
+                        """,
+                (rs, rowNum) -> new ArtistPreviewDTO(
+                        rs.getString("id"),
+                        rs.getString("name"),
+                        rs.getString("profile_url")
+                ),
+                userId
+        );
+    }
+
     private boolean userExists(String userId) {
         Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM users WHERE id = ?",
+                "SELECT COUNT(*) FROM user_replica WHERE id = ?",
                 Integer.class,
                 userId
         );

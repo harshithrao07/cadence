@@ -5,14 +5,15 @@
 
 set -e
 
-SERVICES=(config-server auth-service catalog-service playlist-service streaming-service notification-service)
+SERVICES=(cadence-messaging config-server auth-service catalog-service playlist-service streaming-service notification-service)
 
 for svc in "${SERVICES[@]}"; do
   echo
   echo "======================================================================"
   echo "  $svc"
   echo "======================================================================"
-  (cd "$svc" && ./mvnw test -pl . --no-transfer-progress "$@")
+  # Run from the root aggregator; -am builds cadence-events first.
+  ./mvnw test -pl "$svc" -am --no-transfer-progress "$@"
 done
 
 echo

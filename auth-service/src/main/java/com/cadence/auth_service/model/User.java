@@ -49,26 +49,25 @@ public class User implements UserDetails {
 
     private OAuth2Provider provider;
 
+    /** Existing rows (created before the registration saga) default to ACTIVE. */
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, columnDefinition = "varchar(16) not null default 'ACTIVE'")
+    private UserStatus status = UserStatus.PENDING;
+
+    /** When the current registration attempt started; used by the timeout sweeper. */
+    @Column(name = "registered_at")
+    private java.time.Instant registeredAt;
+
     @Builder.Default
     @Column(name = "email_verified", nullable = false)
     private boolean emailVerified = false;
 
-    @Builder.Default
-    @ManyToMany
-    @JoinTable(
-            name = "artist_following",
-            joinColumns = @JoinColumn(name = "user_id", referencedColumnName = "id"),
-            inverseJoinColumns = @JoinColumn(name = "artist_id", referencedColumnName = "id"),
-            indexes = {
-                    @Index(name = "idx_artist_following_artist_id", columnList = "artist_id"),
-                    @Index(name = "idx_artist_following_user_id", columnList = "user_id")
-            },
-            uniqueConstraints = {
-                    @UniqueConstraint(columnNames = {"user_id", "artist_id"})
-            }
-    )
-    @OrderColumn(name = "follow_order")
-    private List<Artist> artistFollowing = new ArrayList<>();
+    /** Only users that finished the registration saga may authenticate. */
+    @Override
+    public boolean isEnabled() {
+        return status == UserStatus.ACTIVE;
+    }
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {

@@ -4,8 +4,8 @@ Pure Kafka consumer — no HTTP routes, no database. Listens to two topics and s
 
 ## Responsibilities
 
-- Consume `email_verification` events → send "verify your email" plain-text mail
-- Consume `record_created` events → send "new release from <artist>" HTML mail to every follower in the event payload
+- Consume `auth.email-verification` events → send "verify your email" plain-text mail
+- Consume `catalog.record-created` events → send "new release from <artist>" HTML mail to every follower in the event payload
 - Each outbound mail send runs `@Async` so a slow SMTP server doesn't block the Kafka consumer thread
 
 ## Architecture
@@ -17,8 +17,8 @@ flowchart LR
         catalog[catalog-service<br/>RecordCreatedProducer]
     end
 
-    auth -.publish.-> kev[[email_verification]]
-    catalog -.publish.-> krc[[record_created]]
+    auth -.publish.-> kev[[auth.email-verification]]
+    catalog -.publish.-> krc[[catalog.record-created]]
 
     subgraph notif[notification-service :8081]
         evc[EmailVerificationConsumer]
@@ -29,8 +29,8 @@ flowchart LR
     kev --> evc
     krc --> rcc
 
-    evc -->|@KafkaListener| ws
-    rcc -->|@KafkaListener| ws
+    evc -->|"@KafkaListener"| ws
+    rcc -->|"@KafkaListener"| ws
 
     ws -->|MimeMessageHelper<br/>+ HTML template| smtp[(SMTP<br/>e.g. Gmail)]
 ```
@@ -43,7 +43,7 @@ flowchart LR
 sequenceDiagram
     autonumber
     participant Auth as auth-service
-    participant K as Kafka<br/>email_verification
+    participant K as Kafka<br/>auth.email-verification
     participant EV as EmailVerificationConsumer
     participant WS as WorkerService
     participant SMTP
@@ -62,7 +62,7 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Catalog as catalog-service
-    participant K as Kafka<br/>record_created
+    participant K as Kafka<br/>catalog.record-created
     participant RC as RecordCreatedConsumer
     participant WS as WorkerService
     participant SMTP
@@ -81,8 +81,8 @@ sequenceDiagram
 
 | Topic | Group ID | Consumer | Handler |
 |---|---|---|---|
-| `email_verification` | `notification-service-email-verification` | `EmailVerificationConsumer` | `WorkerService.sendEmailVerificationMail` |
-| `record_created` | `cadence-group` | `RecordCreatedConsumer` | `WorkerService.notifyFollowersOfNewRelease` |
+| `auth.email-verification` | `notification-service-email-verification` | `EmailVerificationConsumer` | `WorkerService.sendEmailVerificationMail` |
+| `catalog.record-created` | `cadence-group` | `RecordCreatedConsumer` | `WorkerService.notifyFollowersOfNewRelease` |
 
 Each consumer takes a raw `String` payload and uses `ObjectMapper` for deserialization rather than relying on the Spring Kafka `JsonDeserializer` — keeps the wire format explicit and means producers and consumers don't have to share an event class on the classpath.
 
@@ -125,7 +125,7 @@ From `centralconfigs/notification-service/notification-service.properties`:
 | `WorkerServiceTest` | `MimeMessage` setup with mocked `JavaMailSender`; verifies subject/recipient/text are set correctly through `MimeMessageHelper` (which calls the two-arg `setSubject(text, "UTF-8")` overload, not the simpler one — caught on first integration run) |
 | `EmailVerificationConsumerTest` | Jackson deserialization + delegation to `WorkerService` |
 | `RecordCreatedConsumerTest` | Same shape for record events |
-| `NotificationKafkaIT` | Real Kafka container — publish to each topic, `Awaitility` until `mailSender.send` is invoked the expected number of times (one per follower for record_created) |
+| `NotificationKafkaIT` | Real Kafka container — publish to each topic, `Awaitility` until `mailSender.send` is invoked the expected number of times (one per follower for catalog.record-created) |
 
 ```bash
 cd notification-service && ./mvnw test

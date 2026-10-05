@@ -1,0 +1,2 @@
+com.cadence.messaging.MessagingAutoConfiguration
+com.cadence.messaging.outbox.OutboxAutoConfiguration

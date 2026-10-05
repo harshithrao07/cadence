@@ -10,10 +10,10 @@ Each service has three test slices:
 
 ## Running
 
-Per service:
+Per service (from the repo root; `-am` also builds the shared `cadence-events` module):
 
 ```bash
-cd <service> && ./mvnw test
+./mvnw -pl <service> -am test
 ```
 
 All six services with tests in sequence:

@@ -8,7 +8,7 @@ Owns the music catalog: artists, records (albums/EPs/singles), songs, genres. Ha
 - Follow / unfollow artists; expose follower lists
 - S3 upload + signed URL generation for cover art and audio files
 - Search across artists/records/songs and a "discover" feed
-- Publish `record_created` events for notification-service to fan out follower emails
+- Publish `catalog.record-created` events for notification-service to fan out follower emails
 - Provide internal endpoints (`/internal/**`) used by Feign clients in other services
 
 ## Architecture
@@ -17,49 +17,55 @@ Owns the music catalog: artists, records (albums/EPs/singles), songs, genres. Ha
 flowchart TB
     gw[gateway-service] --> catalog[catalog-service<br/>:8084]
 
-    catalog --> ac[ArtistController]
+    catalog --> ac[ArtistController<br/>+ follow / unfollow]
     catalog --> rc[RecordController]
     catalog --> sc[SongController]
     catalog --> gc[GenreController]
-    catalog --> fc[FilesController<br/>S3 upload/download]
-    catalog --> dc[DiscoverController<br/>search/discover]
-    catalog --> ic[InternalController]
+    catalog --> fc[AwsController<br/>S3 upload / presigned URLs]
+    catalog --> dc[GenericController<br/>search / discover]
+    catalog --> ic[Internal controllers<br/>song previews, followed artists]
 
-    ac --> as[ArtistService]
-    rc --> rs[RecordService]
-    sc --> ss[SongService]
-    gc --> gs[GenreService]
-    fc --> aws[AwsService]
+    fc --> aws[AwsService<br/>+ UploadAuthorizer] --> s3[(AWS S3<br/>covers · audio · avatars)]
+    aws --> mtw[MediaTargetWriter]
+    aws -.->|Feign: playlist owner| playlistsvc[playlist-service]
+    dc -.->|Feign: trending, history| streaming[streaming-service]
+    dc -.->|Feign: playlist search| playlistsvc
 
-    as --> ar[ArtistRepository]
-    as --> jdbc{{JdbcTemplate}}
-    rs --> rr[RecordRepository]
-    rs --> rcp[RecordCreatedProducer]
-    ss --> sr[SongRepository]
-    gs --> gr[GenreRepository]
+    ac & rc & sc & gc & dc & ic & mtw --> db[(catalog_db<br/>artist · record · song · genre · join tables<br/>artist_following · user_replica<br/>outbox · processed_events)]
 
-    ar --> mysql[(MySQL<br/>artist, record,<br/>song, genre,<br/>+ join tables)]
-    rr --> mysql
-    sr --> mysql
-    gr --> mysql
-    jdbc -.cross-service reads.-> mysql
+    db --> relay[[outbox relay]]
+    relay --> out1[[catalog.record-created]]
+    relay --> out2[[catalog.songs-deleted]]
+    relay --> out3[[catalog.media-updated]]
+    relay --> out4[[catalog.user-data-purged]]
 
-    aws --> s3[(AWS S3<br/>cover art<br/>audio files)]
-
-    rcp --> kafka[[record_created topic]]
-    kafka -.consumed.-> notif[notification-service]
+    in1[[auth.user-updated]] --> rep[UserUpdatedConsumer<br/>upsert user_replica] --> db
+    in2[[auth.user-deletion-requested]] --> purge[UserDeletionRequestedConsumer<br/>follows + replica row] --> db
 ```
 
-## Cross-Service Read Boundary
+## Follows and the User Replica
 
-`ArtistService` issues raw `JdbcTemplate` queries against two tables it does **not** own:
+catalog-service **owns `artist_following`** (follow / unfollow / isFollowing / followers / follower counts).
+auth-service reads a user's followed artists through `GET /internal/users/{userId}/followed-artists`.
 
-| Table | Owner | Used in catalog-service for |
-|---|---|---|
-| `users` | auth-service | `userExists(userId)` check before follow/unfollow; `getArtistFollowers()` |
-| `artist_following` | (shared social table) | follow / unfollow / isFollowing / getArtistFollowers |
+User fields catalog needs (follower names and avatars, release-notification emails) come from **`user_replica`**,
+a read-only copy kept in sync from auth-service's `auth.user-updated` events (`UserUpdatedConsumer`; older
+snapshots are ignored). catalog never reads auth-service's `users` table. To rebuild the replica, have auth
+republish every user: `docker exec cadence-auth curl -X POST localhost:8085/internal/users/republish`.
 
-This is a deliberate pragmatic shortcut — going through Feign for every `userExists` check would be a chatty extra round-trip. The contract is: if auth-service ever renames `users.id`, this service will break. Integration tests assert the exact column names so a rename surfaces fast.
+## File Uploads
+
+`POST /api/v1/files` (multipart, parts named `"table column id"`) and `POST /api/v1/files/presigned-url` accept
+only the targets in `UploadTarget`:
+
+| Target | Who may modify | Row lives in | How the row is updated |
+|---|---|---|---|
+| `song song_url`, `record cover_url`, `artist profile_url` | admins | catalog | directly |
+| `users profile_url` | the user themself (or an admin) | auth-service | `catalog.media-updated` event |
+| `playlist cover_url` | the playlist owner (or an admin) | playlist-service | `catalog.media-updated` event |
+
+Permission is checked before anything is stored (playlist ownership via `GET /internal/playlists/{id}/owner` on
+playlist-service, denied if it is unreachable), and the owning service checks again before applying the event.
 
 ## Record Creation Flow
 
@@ -81,7 +87,7 @@ sequenceDiagram
     Aws-->>RS: cover URL
     RS->>DB: save Record + linked Songs (in @Transactional)
     DB-->>RS: savedRecord
-    RS->>DB: query follower emails<br/>(via JOIN on artist_following + users)
+    RS->>DB: query follower emails<br/>(via JOIN on artist_following + user_replica)
     DB-->>RS: List<followerEmails>
     RS->>K: publish RecordCreatedEvent<br/>{recordId, title, artists, coverUrl, followerEmails}
     RS-->>RC: 201 + recordId
@@ -135,7 +141,7 @@ All public routes are under `/api/v1/` and reachable through the gateway.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `/api/v1/files/**` | `FilesController` | S3 upload (admin) + signed URL retrieval |
+| `/api/v1/files/**` | `AwsController` | S3 uploads + presigned URLs, allow-listed targets only (admins for catalog media; users for their own avatar and playlist covers) — see File Uploads |
 | GET | `/api/v1/search?key=` | Cross-entity search (artists + records + songs + playlists) |
 | GET | `/api/v1/discover` | Recommendation feed: popular artists, new releases, suggested by liked genres |
 
@@ -194,7 +200,7 @@ erDiagram
 
 | Direction | Topic | Event | When |
 |---|---|---|---|
-| Produces | `record_created` | `RecordCreatedEvent { recordId, recordTitle, artists, coverUrl, followerEmails }` | After a record is saved + commit |
+| Produces | `catalog.record-created` | `RecordCreatedEvent { recordId, recordTitle, artists, coverUrl, followerEmails }` | After a record is saved + commit |
 
 The producer pre-fetches follower emails synchronously (so the consumer doesn't have to call back into catalog-service). Topic auto-created via `NewTopic` bean (3 partitions, 1 replica).
 
@@ -232,9 +238,9 @@ From `centralconfigs/catalog-service/catalog-service.properties`:
 | `ArtistControllerTest`, `GenreControllerTest`, `SongControllerTest`, `RecordControllerTest` | `@WebMvcTest` slices |
 | `InternalTrafficFilterTest` | Gateway-secret enforcement |
 | `ArtistServiceIT` | Full integration with real MySQL — follow/unfollow happy path + edge cases (already-following, missing user, missing artist, follow-order increment) |
-| `RecordKafkaIT` | Real Kafka container — `record_created` publish + JSON round-trip |
+| `RecordKafkaIT` | Real Kafka container — `catalog.record-created` publish + JSON round-trip |
 
-The integration tests are non-trivial here because `ArtistService` mixes JPA and raw `JdbcTemplate` against tables this service doesn't own. A small `test-schema.sql` provisions `users` and `artist_following` in the MySQL container so the cross-service queries work.
+`ArtistService` mixes JPA and raw `JdbcTemplate`; `artist_following` and `user_replica` are mapped as entities, so the test MySQL container gets them from `ddl-auto=create-drop` and tests seed `user_replica` directly.
 
 ```bash
 cd catalog-service && ./mvnw test
@@ -250,8 +256,10 @@ cd catalog-service
 Required env:
 
 - `DATASOURCE_*`, `KAFKA_URL`
-- `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, `AWS_REGION`, `AWS_S3_BUCKET` — needed for FilesController to work; if you skip these, S3 uploads will fail but other endpoints still work.
+- `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, `AWS_REGION`, `AWS_S3_BUCKET` — needed for AwsController to work; if you skip these, S3 uploads will fail but other endpoints still work.
 
 ## Boot Order
 
-discovery-service → config-server → catalog-service. Doesn't depend on auth-service for startup, but the cross-service `users` / `artist_following` queries return empty until auth-service has created some users.
+discovery-service → config-server → catalog-service. Doesn't depend on auth-service for startup; `user_replica` fills as auth-service publishes `auth.user-updated` events.
+
+**Account deletion:** consumes `auth.user-deletion-requested`, deletes the user's artist follows and the `user_replica` row, and confirms with `catalog.user-data-purged` in the same transaction (idempotent).

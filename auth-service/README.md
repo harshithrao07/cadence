@@ -7,8 +7,16 @@ Owns user identity. Handles registration, password-based login, OAuth2 (Google) 
 - Register users with BCrypt-hashed passwords + strong-password policy
 - Authenticate password logins, issue access + refresh JWTs (15 min / 7 days)
 - OAuth2 authorization-code flow against Google; provision local user on first sign-in
-- Publish `user_created` events so playlist-service can provision a Liked-Songs playlist
-- Publish `email_verification` events so notification-service can send the verification email
+- Run the account deletion saga: `DELETE /api/v1/user/me` (202) locks the account (`DELETING`) and publishes
+  `auth.user-deletion-requested`; playlist, catalog and streaming purge the user's data and confirm; once all three
+  have, the user row is deleted (`user_deletions` keeps the record). Incomplete deletions are re-sent after 10 min.
+- Run the registration saga: users start `PENDING`, `auth.user-registered` asks playlist-service to provision a
+  Liked Songs playlist, and the reply activates the user (or marks the registration `FAILED`). Only `ACTIVE` users
+  get tokens: `POST /auth/v1/register` waits up to `cadence.registration.await-timeout` (5 s) and answers 201 with
+  tokens, 202 (still setting up, no tokens) or 503 (failed; registering again with the same email retries).
+  Login, token refresh and Google sign-in are refused until the account is `ACTIVE`; a sweeper fails registrations
+  still `PENDING` after `cadence.registration.pending-timeout` (5 min).
+- Publish `auth.email-verification` events so notification-service can send the verification email
 - Validate and consume email verification tokens
 
 ## Architecture
@@ -21,30 +29,32 @@ flowchart TB
     gw -->|/api/v1/user/**,<br/>/api/v1/email/**| auth
 
     auth --> ac[AuthenticationController<br/>register / authenticate]
-    auth --> uc[UserController]
+    auth --> uc[UserController<br/>profile, DELETE /me]
     auth --> evc[EmailVerificationController]
-    auth --> appc[AppController<br/>ping / verify-email]
-
-    ac --> as[AuthenticationService]
-    as --> ur[UserRepository]
-    as --> pe[PasswordEncoder<br/>BCrypt]
-    as --> jwt[JwtUtil]
-    as --> ucp[UserCreatedProducer]
-
-    evc --> evs[EmailVerificationService]
-    evs --> evtr[EmailVerificationTokenRepository]
-    evs --> evp[EmailVerificationProducer]
-
     auth --> oauth[OAuthUserService<br/>+ CustomOAuth2SuccessHandler]
-    oauth --> ur
 
-    ur --> mysql[(MySQL<br/>users<br/>email_verification_token)]
+    ac --> reg[RegistrationSaga]
+    oauth --> reg
+    uc --> del[UserDeletionSaga]
+    evc --> evs[EmailVerificationService]
+    uc -.->|Feign| catalog[catalog-service<br/>followed artists]
+    uc -.->|Feign| playlistsvc[playlist-service<br/>user's playlists]
 
-    ucp --> kuc[[user_created]]
-    evp --> kev[[email_verification]]
+    reg --> db[(auth_db<br/>users · email_verification_token<br/>user_deletions · outbox · processed_events)]
+    del --> db
+    evs --> db
 
-    kuc -.consumed.-> playlist[playlist-service]
-    kev -.consumed.-> notif[notification-service]
+    db --> relay[[outbox relay]]
+    relay --> out1[[auth.user-registered]]
+    relay --> out2[[auth.user-updated]]
+    relay --> out3[[auth.user-deletion-requested]]
+    relay --> out4[[auth.email-verification]]
+
+    in1[[playlist.liked-songs-created / -failed]] --> reg
+    in2[[*.user-data-purged]] --> del
+    in3[[catalog.media-updated]] --> avatar[MediaUpdatedConsumer<br/>apply avatar] --> db
+
+    sweep[sweepers<br/>registration timeout · deletion retry] --> reg & del
 ```
 
 ## Registration Flow
@@ -68,7 +78,7 @@ sequenceDiagram
     AS->>AS: BCrypt.encode(password)
     AS->>DB: save User
     DB-->>AS: savedUser (id assigned)
-    AS->>K: publish UserCreatedEvent(userId)
+    AS->>K: publish UserRegisteredEvent(userId)
     AS->>AS: jwtUtil.generateToken(user, 15)<br/>jwtUtil.generateToken(user, 7d)
     AS-->>AC: 201 + { id, accessToken, refreshToken }
     AC-->>G: response
@@ -164,14 +174,19 @@ erDiagram
     }
 ```
 
-The `users` table also has a `@ManyToMany` to a local `Artist` entity via `artist_following` (which catalog-service also reads from via raw `JdbcTemplate` — see catalog-service's README for that boundary).
+Artist follows are owned by catalog-service; the profile endpoint fetches them with `CatalogClient`
+(`GET /internal/users/{userId}/followed-artists`, empty list if catalog is down). Every change to a user's public
+profile (registration, name change, avatar change) publishes `auth.user-updated`, which keeps catalog's
+`user_replica` in sync; `POST /internal/users/republish` re-sends every user. Avatar uploads are stored by
+catalog-service and applied here from `catalog.media-updated` (own avatar only, unless admin).
 
 ## Eventing
 
 | Direction | Topic | Event | When |
 |---|---|---|---|
-| Produces | `user_created` | `UserCreatedEvent { userId }` | After successful registration (password + OAuth2) |
-| Produces | `email_verification` | `EmailVerificationEvent { email, verificationLink }` | When a verification link is requested |
+| Produces | `auth.user-registered` | `UserRegisteredEvent { userId }` | Registration saga start (password + OAuth2) |
+| Consumes | `playlist.liked-songs-created` / `-failed` | `LikedSongsCreatedEvent` / `LikedSongsFailedEvent` | Activates the user, or marks the registration FAILED |
+| Produces | `auth.email-verification` | `EmailVerificationEvent { email, verificationLink }` | When a verification link is requested |
 
 Both producers swallow Kafka failures (logged but non-fatal) so a downstream Kafka outage doesn't block user signup.
 
@@ -213,7 +228,7 @@ From `centralconfigs/auth-service/auth-service.properties`:
 | `AuthenticationControllerTest` | `@WebMvcTest` slice — HTTP wiring + validation |
 | `InternalTrafficFilterTest` | Gateway-secret enforcement |
 | `AuthenticationServiceIT` | `@SpringBootTest` with real MySQL via Testcontainers — register + authenticate end-to-end with real BCrypt + JWT |
-| `KafkaPublishingIT` | Real Kafka container — verifies `user_created` and `email_verification` events round-trip |
+| `KafkaPublishingIT` | Real Kafka container — verifies `auth.user-registered` and `auth.email-verification` events round-trip |
 
 ```bash
 cd auth-service && ./mvnw test

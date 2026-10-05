@@ -27,7 +27,7 @@ All images are downloaded from Deezer/Jamendo and uploaded to your S3 bucket so 
 ```mermaid
 flowchart LR
     seed[seed.js<br/>Node 20+]
-    seed -->|raw SQL inserts| mysql[(MySQL :3306<br/>cadence DB)]
+    seed -->|raw SQL inserts| mysql[(MySQL :3306<br/>auth_db · catalog_db<br/>playlist_db · streaming_db)]
     seed -->|fetch artist images| deezer[Deezer API]
     seed -->|fetch album covers| deezer
     seed -->|fetch audio tracks| jamendo[Jamendo API]
@@ -42,7 +42,8 @@ The seed runs once and exits. The backend services then serve the seeded data no
 
 - Node 20+
 - `npm install` already run (script uses ESM imports)
-- The Cadence backend's MySQL database **must exist and be schema-initialized**. The seed only inserts rows — it doesn't run migrations. Boot at least one backend service that uses JPA (auth-service, catalog-service, playlist-service, or streaming-service) once with `spring.jpa.hibernate.ddl-auto=update` so the tables are created before running the seed.
+- The four service schemas (`auth_db`, `catalog_db`, `playlist_db`, `streaming_db`) **must exist and be table-initialized**. The seed only inserts rows — it doesn't run migrations. Start the stack once (`docker compose up -d`) so **all four** JPA services (auth, catalog, playlist, streaming) create their tables with `ddl-auto=update`.
+- The seed connects as an admin user (`root` by default) because it writes every schema directly, bypassing the services and their events. It fills catalog's `user_replica` itself and marks users `ACTIVE` (no registration saga).
 - A Jamendo client ID (free; sign up at <https://devportal.jamendo.com/>)
 - An AWS S3 bucket with write access (or skip — see Configuration)
 
@@ -51,12 +52,12 @@ The seed runs once and exits. The backend services then serve the seeded data no
 Create `.env` in this folder:
 
 ```env
-# MySQL (matches docker compose defaults)
+# MySQL admin connection (matches docker compose defaults). Tables are schema-qualified; the schema names
+# default to auth_db / catalog_db / playlist_db / streaming_db (override with AUTH_DB_NAME etc. if needed).
 DB_HOST=localhost
 DB_PORT=3306
-DB_USER=cadence
-DB_PASSWORD=cadence
-DB_NAME=cadence
+DB_USER=root
+DB_PASSWORD=password
 
 # AWS S3 (for hosting downloaded images)
 AWS_REGION=us-east-1
@@ -156,8 +157,8 @@ If a backend entity adds a new NOT NULL column, the seed will fail with an `Unkn
 
 ## Troubleshooting
 
-- **`ER_ACCESS_DENIED_ERROR`** — `DB_USER`/`DB_PASSWORD` wrong, or the user lacks permissions on `DB_NAME`.
-- **`ER_NO_SUCH_TABLE`** — backend hasn't created the schema. Boot one JPA-using service with `ddl-auto=update` first.
+- **`ER_ACCESS_DENIED_ERROR` / `ER_TABLEACCESS_DENIED_ERROR`** — `DB_USER`/`DB_PASSWORD` wrong, or not an admin: a service user like `catalog_svc` can only reach its own schema.
+- **`ER_NO_SUCH_TABLE`** — a service hasn't created its tables yet. Start all four JPA services once.
 - **`ER_BAD_NULL_ERROR: Column '...' cannot be null`** — backend added a NOT NULL column the seed doesn't fill. Add it to the relevant INSERT.
 - **`getaddrinfo ENOTFOUND api.deezer.com`** — no internet, or Deezer is down. Script falls back to faker images so it still completes.
 - **`Failed to fetch track: Request failed with status 401`** from Jamendo — `JAMENDO_CLIENT_ID` missing or invalid. Songs get the hardcoded fallback URL (everything plays the same audio).
