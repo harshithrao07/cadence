@@ -137,7 +137,7 @@ Forward-only, no compensation.
 
 Implemented as a shared Spring Boot auto-configuration library, **`cadence-messaging`**, rather than per-service code:
 
-- [x] `outbox` table (`id`, `event_id`, `saga_id`, `aggregate_type`, `aggregate_id`, `type`, `topic`, `payload`, `created_at`, `sent_at`, `failed_at`, `last_error`) — entity in the library, created by each JPA service's `ddl-auto`
+- [x] `outbox` table (`id`, `event_id`, `saga_id`, `aggregate_type`, `aggregate_id`, `type`, `topic`, `payload`, `traceparent`, `created_at`, `sent_at`, `failed_at`, `last_error`; `traceparent` added later for distributed tracing) — entity in the library, created by each JPA service's `ddl-auto`
 - [x] `OutboxPublisher` (`Propagation.MANDATORY`; a failure marks the caller's transaction rollback-only even if the caller swallows it)
 - [x] `PollingOutboxRelay`: own single-thread scheduler, 500 ms, `FOR UPDATE SKIP LOCKED`, batch 100; hourly cleanup of rows sent > 7 days ago
   - retriable send failure (broker down, missing topic) blocks only that topic for the batch, preserving its order while other topics flow; retried forever
