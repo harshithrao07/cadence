@@ -1,6 +1,5 @@
 package com.cadence.streaming_service.service;
 
-import com.amazonaws.HttpMethod;
 import com.amazonaws.services.s3.AmazonS3;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,8 +10,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.net.URL;
-import java.time.Instant;
-import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -85,14 +82,5 @@ class AwsStreamingServiceTest {
     @Test
     void bucketObjectKey_returnsEmpty_forMalformedUrl() {
         assertThat(awsStreamingService.bucketObjectKey("not a uri at all >")).isEmpty();
-    }
-
-    @Test
-    void generatePresignedGetUrl_signsGet_untilExpiry() throws Exception {
-        Instant expiresAt = Instant.parse("2026-01-01T01:00:00Z");
-        URL signed = new URL(OBJECT_URL + "?X-Amz-Signature=sig");
-        when(amazonS3.generatePresignedUrl(BUCKET, KEY, Date.from(expiresAt), HttpMethod.GET)).thenReturn(signed);
-
-        assertThat(awsStreamingService.generatePresignedGetUrl(KEY, expiresAt)).isEqualTo(signed.toString());
     }
 }

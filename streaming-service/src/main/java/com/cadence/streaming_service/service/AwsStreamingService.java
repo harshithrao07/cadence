@@ -1,14 +1,11 @@
 package com.cadence.streaming_service.service;
 
-import com.amazonaws.HttpMethod;
 import com.amazonaws.services.s3.AmazonS3;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
-import java.time.Instant;
-import java.util.Date;
 import java.util.Optional;
 
 @Service
@@ -43,9 +40,5 @@ public class AwsStreamingService {
         } catch (IllegalArgumentException e) {
             return Optional.empty();
         }
-    }
-
-    public String generatePresignedGetUrl(String key, Instant expiresAt) {
-        return amazonS3.generatePresignedUrl(s3BucketName, key, Date.from(expiresAt), HttpMethod.GET).toString();
     }
 }

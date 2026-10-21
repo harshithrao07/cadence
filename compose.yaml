@@ -226,6 +226,10 @@ services:
       KAFKA_URL: kafka:29092
       LOKI_URL: http://loki:3100/loki/api/v1/push
       ZIPKIN_URL: http://tempo:9411/api/v2/spans
+      # Where the key is mounted below; overrides the host path in env.properties
+      AWS_CLOUDFRONT_PRIVATE_KEY_PATH: /run/secrets/cloudfront_private_key.pem
+    volumes:
+      - ./secrets/cloudfront_private_key.pem:/run/secrets/cloudfront_private_key.pem:ro
     depends_on:
       mysql:
         condition: service_healthy

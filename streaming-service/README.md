@@ -18,12 +18,14 @@ flowchart TB
     streaming --> sc[StreamingController]
     sc --> ss[StreamingService<br/>stream a song]
     sc --> phs[PlayHistoryService<br/>aggregations]
-    ss --> ws[WorkerService<br/>recordPlay]
-    ss --> ass[AwsStreamingService<br/>presigned GET URLs]
+    sc --> ws[WorkerService<br/>recordPlay]
+    ss --> ass[AwsStreamingService<br/>bucket object lookup]
+    ss --> cfs[CloudFrontSigner<br/>signed song URLs]
 
     ss -.->|Feign: streaming metadata| catalog[catalog-service]
     ws & phs --> db[(streaming_db<br/>play_history · outbox · processed_events)]
     ass --> s3[(AWS S3)]
+    cfs -.->|URL served by| cf[(CloudFront)] -.->|origin| s3
 
     in1[[catalog.songs-deleted]] --> sd[SongsDeletedConsumer<br/>drop their history] --> db
     in2[[auth.user-deletion-requested]] --> purge[UserDeletionRequestedConsumer<br/>drop the user's history] --> db
@@ -39,13 +41,22 @@ returns where the client should play it from, as `ApiResponseDTO<{ url, expiresA
 
 | `song_url` | Response |
 |---|---|
-| An object URL in our bucket, object present | Presigned GET URL, valid for 1 hour (`StreamingService.URL_TTL`) |
-| An object URL in our bucket, object missing (upload never finished) | 404, no play recorded |
+| An object URL in our bucket, object present | CloudFront signed URL for the same key, valid for 1 hour (`StreamingService.URL_TTL`) |
+| An object URL in our bucket, object missing (upload never finished) | 404 |
 | Any other host (e.g. seeded tracks) | `song_url` unchanged, `expiresAt` null |
 | Unknown song / no `song_url` | 404 |
 
-Each successful call records exactly one play. The browser uses the URL as an `<audio>` `src` and makes its own range
-requests against S3, so seeking and buffering don't come back through the gateway.
+The call records nothing, so the player can fetch the next song's URL ahead of time and preload it; it records the
+play with `POST /song/{songId}/plays` once playback starts. The browser uses the URL as an `<audio>` `src` and makes its own range
+requests against CloudFront, so seeking and buffering don't come back through the gateway, and popular songs are served
+from edge caches instead of S3.
+
+`CloudFrontSigner` signs with a canned policy (expiry only). The distribution must be set up to match:
+
+- Origin: the bucket, through Origin Access Control, so the bucket stays private and only CloudFront can read it
+- Restrict viewer access with a trusted key group holding the public key of `cloud.aws.cloudfront.key-pair-id`
+- Cache policy without query strings in the cache key, so every listener's differently-signed URL hits the same cached
+  object
 
 ## Recording a Play
 
@@ -58,7 +69,7 @@ sequenceDiagram
     participant Repo as PlayHistoryRepository
     participant DB as MySQL
 
-    Client->>SC: POST .../record (userId, songId)
+    Client->>SC: POST /song/{songId}/plays (X-User-Id)
     SC->>WS: recordPlay(userId, songId)
     WS->>Repo: findById(PlayHistoryId(userId, songId))
     alt first listen
@@ -97,7 +108,8 @@ All routes under `/api/v1/stream` and reachable through the gateway.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/song/{songId}` | user | Records a play and returns the URL to play the song from (presigned S3 GET, 1 h) |
+| GET | `/song/{songId}` | user | The URL to play the song from (CloudFront signed URL, 1 h); records nothing |
+| POST | `/song/{songId}/plays` | user | Records one play for `X-User-Id`; the player calls it when playback starts |
 | GET | `/history` | user | Recent play history for `X-User-Id` |
 | GET | `/stats/users/me/top-songs` | user | Top songs for `X-User-Id` |
 | GET | `/stats/trending?since=&page=&size=` | public | Platform-wide trending; `since` filters by Instant |
@@ -159,7 +171,8 @@ From `centralconfigs/streaming-service/streaming-service.properties`:
 
 - `spring.datasource.*` — MySQL
 - `spring.jpa.hibernate.ddl-auto=update`
-- `cloud.aws.credentials.*`, `cloud.aws.region.static`, `cloud.aws.s3.bucket` — for signed URL generation
+- `cloud.aws.credentials.*`, `cloud.aws.region.static`, `cloud.aws.s3.bucket` — to check a song's object exists
+- `cloud.aws.cloudfront.domain`, `cloud.aws.cloudfront.key-pair-id`, `cloud.aws.cloudfront.private-key-path` — for signed URL generation; the service doesn't start without a readable, valid key file. Put the key at `secrets/cloudfront_private_key.pem` (gitignored): compose mounts it into the container at `/run/secrets/cloudfront_private_key.pem` and points the path there
 
 ## Testing
 
@@ -168,8 +181,9 @@ From `centralconfigs/streaming-service/streaming-service.properties`:
 | `WorkerServiceTest` | Find-or-create + increment with mocked repository |
 | `PlayHistoryServiceTest` | Aggregation methods over mocked repository projections |
 | `StreamingControllerTest` | `@WebMvcTest` slice — HTTP wiring + header validation |
-| `AwsStreamingServiceTest` | Bucket-URL detection and presigned GET generation with a mocked `AmazonS3` |
-| `StreamingServiceIT` | Real MySQL — presigned vs external vs missing-upload resolution, one play recorded per call |
+| `AwsStreamingServiceTest` | Bucket-URL detection with a mocked `AmazonS3` |
+| `CloudFrontSignerTest` | Signed URL shape, signature verified against the canned policy, key file loading, PKCS#1/PKCS#8 parsing |
+| `StreamingServiceIT` | Signed vs external vs missing-upload resolution; fetching a URL records no play |
 | `InternalTrafficFilterTest` | Gateway-secret enforcement |
 | `PlayHistoryIT` | Real MySQL — covers `@EmbeddedId` upsert, `lastPlayedAt` auto-update, JPQL aggregations (`SUM`/`GROUP BY`/`COUNT(DISTINCT)`), time-windowed filters with real `Instant` boundaries |
 
@@ -189,7 +203,8 @@ cd streaming-service
 Required env:
 
 - `DATASOURCE_*`
-- `AWS_*` if you want `/song/{songId}` signed URLs to work
+- `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, `AWS_REGION`, `AWS_S3_BUCKET`
+- `AWS_CLOUDFRONT_DOMAIN`, `AWS_CLOUDFRONT_KEY_PAIR_ID`, `AWS_CLOUDFRONT_PRIVATE_KEY_PATH` (the key file's path on your machine)
 
 ## Boot Order
 

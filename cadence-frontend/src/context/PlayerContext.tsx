@@ -8,6 +8,23 @@ import api from "@/lib/api";
 
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
 
+// A preloaded URL with less time left than this could expire mid-song, so it is fetched again instead
+const PRELOAD_MIN_REMAINING_MS = 10 * 60 * 1000;
+
+interface PreloadedSong {
+  songId: string;
+  url: string;
+  expiresAt: number | null;
+  audio: HTMLAudioElement;
+}
+
+// Stops an element downloading; removing src alone doesn't abort the request until load() runs
+const releaseAudio = (audio: HTMLAudioElement) => {
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+};
+
 export const usePlayer = () => {
   const context = useContext(PlayerContext);
   if (!context) {
@@ -27,6 +44,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [queueIndex, setQueueIndex] = useState<number>(-1);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const unbindAudioRef = useRef<(() => void) | null>(null);
+  const onEndedRef = useRef<() => void>(() => {});
+  // The next song in the queue, already buffering in its own element so it starts without a wait
+  const preloadRef = useRef<PreloadedSong | null>(null);
   const activeUrlRef = useRef<string | null>(null);
   const queueRef = useRef<EachSongDTO[]>([]);
   const queueIndexRef = useRef<number>(-1);
@@ -35,65 +56,88 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const isSeekingRef = useRef(false);
   const targetSeekTimeRef = useRef(0);
 
+  // Wires player state to the element that is playing; it changes when a preloaded song takes over
+  const bindAudio = React.useCallback((audio: HTMLAudioElement) => {
+    const handleTimeUpdate = () => {
+      if (isSeekingRef.current) {
+          // If we are seeking, only update if we are close to the target
+          // This prevents "jumping back" to old time before seek takes effect
+          if (Math.abs(audio.currentTime - targetSeekTimeRef.current) < 0.5) {
+              isSeekingRef.current = false;
+          } else {
+              return;
+          }
+      }
+      setCurrentTime(audio.currentTime);
+    };
+    const handleDurationChange = () => {
+      const d = audio.duration;
+      if (Number.isFinite(d)) {
+        setDuration(d);
+      } else if (currentSongRef.current?.totalDuration) {
+        setDuration(currentSongRef.current.totalDuration);
+      }
+    };
+    const handleWaiting = () => setIsBuffering(true);
+    const handlePlaying = () => setIsBuffering(false);
+    const handleCanPlay = () => setIsBuffering(false);
+    const handleEnded = () => onEndedRef.current();
+
+    audio.addEventListener("timeupdate", handleTimeUpdate);
+    audio.addEventListener("durationchange", handleDurationChange);
+    audio.addEventListener("waiting", handleWaiting);
+    audio.addEventListener("playing", handlePlaying);
+    audio.addEventListener("canplay", handleCanPlay);
+    audio.addEventListener("ended", handleEnded);
+
+    return () => {
+      audio.removeEventListener("timeupdate", handleTimeUpdate);
+      audio.removeEventListener("durationchange", handleDurationChange);
+      audio.removeEventListener("waiting", handleWaiting);
+      audio.removeEventListener("playing", handlePlaying);
+      audio.removeEventListener("canplay", handleCanPlay);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, []);
+
+  const activateAudio = React.useCallback((audio: HTMLAudioElement) => {
+    if (audioRef.current && audioRef.current !== audio) {
+      audio.volume = audioRef.current.volume;
+    }
+    unbindAudioRef.current?.();
+    audioRef.current = audio;
+    unbindAudioRef.current = bindAudio(audio);
+  }, [bindAudio]);
+
+  const discardPreload = React.useCallback(() => {
+    if (preloadRef.current) {
+      releaseAudio(preloadRef.current.audio);
+      preloadRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (typeof window !== "undefined") {
-      audioRef.current = new Audio();
-      audioRef.current.volume = volume;
-
-      const audio = audioRef.current;
-
-      const handleTimeUpdate = () => {
-        if (isSeekingRef.current) {
-            // If we are seeking, only update if we are close to the target
-            // This prevents "jumping back" to old time before seek takes effect
-            if (Math.abs(audio.currentTime - targetSeekTimeRef.current) < 0.5) {
-                isSeekingRef.current = false;
-            } else {
-                return;
-            }
-        }
-        setCurrentTime(audio.currentTime);
-      };
-      const handleDurationChange = () => {
-        const d = audio.duration;
-        if (Number.isFinite(d)) {
-          setDuration(d);
-        } else if (currentSongRef.current?.totalDuration) {
-          setDuration(currentSongRef.current.totalDuration);
-        }
-      };
-      const handleWaiting = () => setIsBuffering(true);
-      const handlePlaying = () => setIsBuffering(false);
-      const handleCanPlay = () => {
-          setIsBuffering(false);
-          // If we were supposed to be playing but were paused for buffering, resume now
-          if (isPlaying && audio.paused) {
-              audio.play();
-          }
-      };
-
-      audio.addEventListener("timeupdate", handleTimeUpdate);
-      audio.addEventListener("durationchange", handleDurationChange);
-      audio.addEventListener("waiting", handleWaiting);
-      audio.addEventListener("playing", handlePlaying);
-      audio.addEventListener("canplay", handleCanPlay);
+      const audio = new Audio();
+      audio.volume = volume;
+      activateAudio(audio);
 
       return () => {
-        audio.removeEventListener("timeupdate", handleTimeUpdate);
-        audio.removeEventListener("durationchange", handleDurationChange);
-        audio.removeEventListener("waiting", handleWaiting);
-        audio.removeEventListener("playing", handlePlaying);
-        audio.removeEventListener("canplay", handleCanPlay);
-
-        audio.pause();
-        audio.src = "";
+        unbindAudioRef.current?.();
+        unbindAudioRef.current = null;
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.src = "";
+        }
+        discardPreload();
         if (activeUrlRef.current) {
           URL.revokeObjectURL(activeUrlRef.current);
           activeUrlRef.current = null;
         }
       };
     }
-  }, []);
+    // Both callbacks are stable; volume is only the initial value, later changes go through the volume effect
+  }, [activateAudio, discardPreload]);
 
   useEffect(() => {
     queueRef.current = queue;
@@ -113,13 +157,41 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [volume]);
 
+  // Preload the next song in the queue
+  useEffect(() => {
+    const next = queue[queueIndex + 1];
+    if (preloadRef.current && preloadRef.current.songId === next?.id) return;
+    discardPreload();
+    if (!next || (next as any).file) return;
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get<ApiResponseDTO<SongStreamUrlDTO>>(`api/v1/stream/song/${next.id}`, { silentErrors: true });
+        if (cancelled) return;
+        const { url, expiresAt } = res.data.data;
+        const audio = new Audio();
+        audio.preload = "auto";
+        audio.src = url;
+        preloadRef.current = { songId: next.id, url, expiresAt: expiresAt ? Date.parse(expiresAt) : null, audio };
+      } catch (e) {
+        // Not fatal: the song loads normally when it comes up
+      }
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [queue, queueIndex, discardPreload]);
+
   const loadAndPlaySong = React.useCallback(
     async (song: EachSongDTO, startTime: number = 0) => {
       if (!audioRef.current) return;
 
       const requestId = ++playRequestIdRef.current;
 
-      const audio = audioRef.current;
+      let audio = audioRef.current;
       audio.pause();
       audio.currentTime = startTime;
 
@@ -128,30 +200,53 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setDuration(song.totalDuration || 0);
 
       try {
-        let url: string;
         const localFile = (song as any).file as File | undefined;
 
-        if (localFile) {
-          const blob = new Blob([localFile], { type: localFile.type || "audio/mpeg" });
-          url = window.URL.createObjectURL(blob);
-        } else {
-          // Records the play and returns a short-lived URL; the browser streams and seeks it natively
-          const res = await api.get<ApiResponseDTO<SongStreamUrlDTO>>(`api/v1/stream/song/${song.id}`);
-          url = res.data.data.url;
+        let preloaded = preloadRef.current?.songId === song.id ? preloadRef.current : null;
+        if (preloaded && preloaded.expiresAt !== null && preloaded.expiresAt - Date.now() < PRELOAD_MIN_REMAINING_MS) {
+          // Its URL could expire before the song finishes; load it fresh instead
+          discardPreload();
+          preloaded = null;
         }
 
-        if (requestId !== playRequestIdRef.current) {
-          if (url.startsWith("blob:")) {
-            window.URL.revokeObjectURL(url);
+        if (preloaded) {
+          // Already buffering: swap its element in instead of loading the song again
+          preloadRef.current = null;
+          releaseAudio(audio);
+          if (activeUrlRef.current && activeUrlRef.current.startsWith("blob:")) {
+            window.URL.revokeObjectURL(activeUrlRef.current);
           }
-          return;
+          activateAudio(preloaded.audio);
+          audio = preloaded.audio;
+          activeUrlRef.current = preloaded.url;
+          if (Number.isFinite(audio.duration)) {
+            setDuration(audio.duration);
+          }
+        } else {
+          let url: string;
+          if (localFile) {
+            const blob = new Blob([localFile], { type: localFile.type || "audio/mpeg" });
+            url = window.URL.createObjectURL(blob);
+          } else {
+            // A short-lived URL; the browser streams and seeks it natively
+            const res = await api.get<ApiResponseDTO<SongStreamUrlDTO>>(`api/v1/stream/song/${song.id}`);
+            url = res.data.data.url;
+          }
+
+          if (requestId !== playRequestIdRef.current) {
+            if (url.startsWith("blob:")) {
+              window.URL.revokeObjectURL(url);
+            }
+            return;
+          }
+
+          if (activeUrlRef.current && activeUrlRef.current.startsWith("blob:")) {
+            window.URL.revokeObjectURL(activeUrlRef.current);
+          }
+          activeUrlRef.current = url;
+          audio.src = url;
         }
 
-        if (activeUrlRef.current && activeUrlRef.current.startsWith("blob:")) {
-          window.URL.revokeObjectURL(activeUrlRef.current);
-        }
-        activeUrlRef.current = url;
-        audio.src = url;
         if (startTime > 0) {
           audio.currentTime = startTime;
         }
@@ -164,6 +259,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
 
         setIsPlaying(true);
+
+        // Count the play once it has actually started; resuming mid-song isn't a new play
+        if (!localFile && startTime === 0) {
+          api.post(`api/v1/stream/song/${song.id}/plays`, null, { silentErrors: true }).catch(() => {});
+        }
       } catch (error: any) {
         if (error && (error.code === "ERR_CANCELED" || error.name === "CanceledError" || error.name === "AbortError")) {
           return;
@@ -172,14 +272,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setIsPlaying(false);
       }
     },
-    []
+    [activateAudio, discardPreload]
   );
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const handleEnded = () => {
+    onEndedRef.current = () => {
       const q = queueRef.current;
       const idx = queueIndexRef.current;
 
@@ -191,11 +288,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setIsPlaying(false);
         setCurrentTime(0);
       }
-    };
-
-    audio.addEventListener("ended", handleEnded);
-    return () => {
-      audio.removeEventListener("ended", handleEnded);
     };
   }, [loadAndPlaySong]);
 
@@ -292,6 +384,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const resetPlayer = React.useCallback(() => {
     playRequestIdRef.current++;
+    discardPreload();
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -310,7 +403,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setQueueIndex(-1);
     queueRef.current = [];
     queueIndexRef.current = -1;
-  }, []);
+  }, [discardPreload]);
 
   const removeFromQueue = React.useCallback((index: number) => {
     setQueue((prevQueue) => {

@@ -20,12 +20,13 @@ public class StreamingService {
 
     private final CatalogClient catalogClient;
     private final AwsStreamingService awsStreamingService;
-    private final WorkerService workerService;
+    private final CloudFrontSigner cloudFrontSigner;
 
     /**
-     * The URL the client plays the song from, recording one play. Empty if the song or its audio doesn't exist.
+     * The URL the client plays the song from. Records nothing, so the player can fetch it ahead of time to preload the
+     * next song; plays are recorded separately once playback starts. Empty if the song or its audio doesn't exist.
      */
-    public Optional<SongStreamUrlDTO> getStreamUrl(String songId, String userId) {
+    public Optional<SongStreamUrlDTO> getStreamUrl(String songId) {
         SongStreamingMetadataDTO metadata = catalogClient.getStreamingMetadata(songId);
         if (metadata == null || metadata.songUrl() == null || metadata.songUrl().isBlank()) {
             return Optional.empty();
@@ -36,8 +37,6 @@ public class StreamingService {
             log.warn("Audio for song {} is missing from the bucket", songId);
             return Optional.empty();
         }
-
-        workerService.recordPlay(userId, songId);
         return streamUrl;
     }
 
@@ -52,9 +51,6 @@ public class StreamingService {
             return Optional.empty();
         }
         Instant expiresAt = Instant.now().plus(URL_TTL);
-        return Optional.of(new SongStreamUrlDTO(
-                awsStreamingService.generatePresignedGetUrl(objectKey.get(), expiresAt),
-                expiresAt
-        ));
+        return Optional.of(new SongStreamUrlDTO(cloudFrontSigner.signedUrl(objectKey.get(), expiresAt), expiresAt));
     }
 }
