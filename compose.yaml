@@ -55,10 +55,54 @@ services:
       retries: 15
       start_period: 30s
 
+  loki:
+    image: grafana/loki:3.5.0
+    container_name: cadence-loki
+    ports:
+      - "3102:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - cadence-loki-data:/loki
+
+  prometheus:
+    image: prom/prometheus:v2.46.0
+    command:
+      - --enable-feature=exemplar-storage
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - '9090:9090'
+
+  tempo:
+    image: grafana/tempo:2.2.2
+    command: ['-config.file=/etc/tempo.yaml']
+    volumes:
+      - ./docker/tempo/tempo.yml:/etc/tempo.yaml:ro
+      - ./docker/tempo/tempo-data:/tmp/tempo
+    ports:
+      - '3110:3200' # Tempo
+      - '9411:9411' # zipkin
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    volumes:
+      - ./docker/grafana:/etc/grafana/provisioning/datasources:ro
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    ports:
+      - '3001:3000'
+
   discovery-service:
     build:
       context: ./discovery-service
     container_name: cadence-discovery
+    environment:
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      ZIPKIN_URL: http://tempo:9411/api/v2/spans
     ports:
       - "8761:8761"
     healthcheck:
@@ -72,6 +116,9 @@ services:
     build:
       context: ./config-server
     container_name: cadence-config
+    environment:
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      ZIPKIN_URL: http://tempo:9411/api/v2/spans
     ports:
       - "8888:8888"
     healthcheck:
@@ -96,6 +143,8 @@ services:
       DATASOURCE_USERNAME: auth_svc
       DATASOURCE_PASSWORD: ${AUTH_DB_PASSWORD:-auth_dev_password}
       KAFKA_URL: kafka:29092
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      ZIPKIN_URL: http://tempo:9411/api/v2/spans
     depends_on:
       mysql:
         condition: service_healthy
@@ -121,6 +170,8 @@ services:
       DATASOURCE_USERNAME: catalog_svc
       DATASOURCE_PASSWORD: ${CATALOG_DB_PASSWORD:-catalog_dev_password}
       KAFKA_URL: kafka:29092
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      ZIPKIN_URL: http://tempo:9411/api/v2/spans
     depends_on:
       mysql:
         condition: service_healthy
@@ -146,6 +197,8 @@ services:
       DATASOURCE_USERNAME: playlist_svc
       DATASOURCE_PASSWORD: ${PLAYLIST_DB_PASSWORD:-playlist_dev_password}
       KAFKA_URL: kafka:29092
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      ZIPKIN_URL: http://tempo:9411/api/v2/spans
     depends_on:
       mysql:
         condition: service_healthy
@@ -171,6 +224,8 @@ services:
       DATASOURCE_USERNAME: streaming_svc
       DATASOURCE_PASSWORD: ${STREAMING_DB_PASSWORD:-streaming_dev_password}
       KAFKA_URL: kafka:29092
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      ZIPKIN_URL: http://tempo:9411/api/v2/spans
     depends_on:
       mysql:
         condition: service_healthy
@@ -193,6 +248,8 @@ services:
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
       KAFKA_URL: kafka:29092
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      ZIPKIN_URL: http://tempo:9411/api/v2/spans
     depends_on:
       kafka:
         condition: service_healthy
@@ -216,6 +273,8 @@ services:
       # CORS origins the browser is allowed to call from. Override to add
       # production domains as a comma-separated list.
       FRONTEND_URL: http://localhost:3000
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      ZIPKIN_URL: http://tempo:9411/api/v2/spans
     depends_on:
       discovery-service:
         condition: service_healthy
@@ -249,3 +308,4 @@ services:
 volumes:
   cadence-mysql-data:
   cadence-kafka-data:
+  cadence-loki-data:

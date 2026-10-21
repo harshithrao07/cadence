@@ -1,6 +1,7 @@
 package com.cadence.playlist_service.repository;
 
 import java.util.Collection;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.Modifying;
@@ -10,6 +11,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
 
+@Observed
 public interface LikedPlaylistRepository extends JpaRepository<LikedPlaylist, LikedPlaylistId> {
     long countByIdUserId(String userId);
 

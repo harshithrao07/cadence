@@ -4,6 +4,7 @@ import com.project.cadence.dto.song.SongBaseDTO;
 import com.project.cadence.dto.song.TopSongsInArtistProfileDTO;
 import com.project.cadence.model.Artist;
 import com.project.cadence.model.Song;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.data.domain.*;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.CrudRepository;
@@ -11,6 +12,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 
+@Observed
 public interface SongRepository extends CrudRepository<Song, String> {
     @Query("""
                 SELECT a

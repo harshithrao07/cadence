@@ -12,6 +12,7 @@ import jakarta.persistence.PersistenceContext;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -248,13 +249,12 @@ class MessagingIT {
         KafkaTemplate<String, String> real = sender.template();
         @SuppressWarnings("unchecked")
         KafkaTemplate<String, String> flaky = org.mockito.Mockito.mock(KafkaTemplate.class);
-        org.mockito.Mockito.when(flaky.send(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString())).thenAnswer(inv -> {
-            String t = inv.getArgument(0);
-            return t.equals(stuckTopic)
+        org.mockito.Mockito.when(flaky.send(org.mockito.ArgumentMatchers.<ProducerRecord<String, String>>any())).thenAnswer(inv -> {
+            ProducerRecord<String, String> record = inv.getArgument(0);
+            return record.topic().equals(stuckTopic)
                     ? java.util.concurrent.CompletableFuture.failedFuture(
-                            new org.apache.kafka.common.errors.TimeoutException("Topic " + t + " not present in metadata"))
-                    : real.send(t, inv.getArgument(1), inv.getArgument(2));
+                            new org.apache.kafka.common.errors.TimeoutException("Topic " + record.topic() + " not present in metadata"))
+                    : real.send(record);
         });
         PollingOutboxRelay flakyRelay = new PollingOutboxRelay(flaky, tx, properties.getOutbox());
         beanFactory.autowireBean(flakyRelay);
@@ -273,8 +273,8 @@ class MessagingIT {
                 .getResultList());
         assertThat(waiting).containsExactly("stuck-1", "stuck-2");
         // Only the first stuck row was attempted; the second waited behind it to keep the topic's order.
-        org.mockito.Mockito.verify(flaky, org.mockito.Mockito.times(1)).send(org.mockito.ArgumentMatchers.eq(stuckTopic),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+        org.mockito.Mockito.verify(flaky, org.mockito.Mockito.times(1)).send(
+                org.mockito.ArgumentMatchers.<ProducerRecord<String, String>>argThat(r -> r.topic().equals(stuckTopic)));
     }
 
     @Test

@@ -16,12 +16,18 @@ public class JpaOutboxPublisher implements OutboxPublisher {
     private static final Logger log = LoggerFactory.getLogger(JpaOutboxPublisher.class);
 
     private final EventCodec codec;
+    private final OutboxTracing tracing;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     public JpaOutboxPublisher(EventCodec codec) {
+        this(codec, OutboxTracing.NOOP);
+    }
+
+    public JpaOutboxPublisher(EventCodec codec, OutboxTracing tracing) {
         this.codec = codec;
+        this.tracing = tracing;
     }
 
     /**
@@ -43,6 +49,7 @@ public class JpaOutboxPublisher implements OutboxPublisher {
                 envelope.type(),
                 topic,
                 codec.encode(envelope),
+                tracing.currentTraceparent(),
                 envelope.occurredAt()
         ));
 

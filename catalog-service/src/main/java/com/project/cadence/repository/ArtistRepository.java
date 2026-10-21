@@ -2,6 +2,7 @@ package com.project.cadence.repository;
 
 import com.project.cadence.dto.artist.ArtistPreviewDTO;
 import com.project.cadence.model.Artist;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Repository;
 import java.util.List;
 
 @Repository
+@Observed
 public interface ArtistRepository extends JpaRepository<Artist, String> {
 
     Page<Artist> findByNameStartingWithIgnoreCase(String trim, Pageable pageable);

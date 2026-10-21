@@ -54,6 +54,10 @@ public class OutboxEvent {
     @Column(nullable = false, length = 16_777_215)
     private String payload;
 
+    /** W3C trace context of the request that wrote the row; the relay continues this trace. Null when untraced. */
+    @Column(length = 55)
+    private String traceparent;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -71,7 +75,7 @@ public class OutboxEvent {
     }
 
     public OutboxEvent(String eventId, String sagaId, String aggregateType, String aggregateId, String type,
-                       String topic, String payload, Instant createdAt) {
+                       String topic, String payload, String traceparent, Instant createdAt) {
         this.eventId = eventId;
         this.sagaId = sagaId;
         this.aggregateType = aggregateType;
@@ -79,6 +83,7 @@ public class OutboxEvent {
         this.type = type;
         this.topic = topic;
         this.payload = payload;
+        this.traceparent = traceparent;
         this.createdAt = createdAt;
     }
 
@@ -112,6 +117,10 @@ public class OutboxEvent {
 
     public String getPayload() {
         return payload;
+    }
+
+    public String getTraceparent() {
+        return traceparent;
     }
 
     public Instant getCreatedAt() {
