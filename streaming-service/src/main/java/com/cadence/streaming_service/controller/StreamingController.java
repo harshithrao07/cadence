@@ -4,10 +4,11 @@ import com.cadence.streaming_service.dto.ApiResponseDTO;
 import com.cadence.streaming_service.dto.PlayHistoryDTO;
 import com.cadence.streaming_service.dto.SongPlayCountDTO;
 import com.cadence.streaming_service.dto.SongPlayStatsDTO;
+import com.cadence.streaming_service.dto.SongStreamUrlDTO;
 import com.cadence.streaming_service.service.PlayHistoryService;
 import com.cadence.streaming_service.service.StreamingService;
-import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -15,7 +16,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.time.Instant;
 import java.util.List;
@@ -28,12 +28,21 @@ public class StreamingController {
     private final PlayHistoryService playHistoryService;
 
     @GetMapping("/song/{songId}")
-    public ResponseEntity<StreamingResponseBody> streamSongById(
+    public ResponseEntity<ApiResponseDTO<SongStreamUrlDTO>> getSongStreamUrl(
             @RequestHeader("X-User-Id") String userId,
-            HttpServletRequest request,
             @PathVariable String songId
     ) {
-        return streamingService.streamSongById(songId, userId, request.getHeader("Range"));
+        return streamingService.getStreamUrl(songId, userId)
+                .map(streamUrl -> ResponseEntity.ok(new ApiResponseDTO<>(
+                        true,
+                        "Stream URL generated successfully",
+                        streamUrl
+                )))
+                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiResponseDTO<>(
+                        false,
+                        "Song not found",
+                        null
+                )));
     }
 
     @GetMapping("/history")

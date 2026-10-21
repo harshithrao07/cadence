@@ -94,7 +94,7 @@ The frontend never talks to backend services directly — every request goes thr
 - **Response interceptor** — on `401`, transparently calls `POST /auth/v1/refresh` with the refresh token, updates localStorage, and retries the original request. On second failure, clears auth state and redirects to `/auth/login`
 - **Error toasts** — any `4xx`/`5xx` other than 401 surfaces the backend `ApiResponseDTO.message` via Sonner
 
-The audio player (`src/context/PlayerContext.tsx`) uses raw `fetch` instead of axios because it needs `Range` headers for byte-range streaming and direct access to the response body as a stream. It hits `/api/v1/stream/song/{songId}` and handles HTTP 206 Partial Content for seekable playback.
+The audio player (`src/context/PlayerContext.tsx`) calls `GET /api/v1/stream/song/{songId}` through axios, which records the play and returns `{ url, expiresAt }` — a presigned S3 URL valid for an hour (or the song's own URL for audio hosted elsewhere). It sets that as the `<audio>` element's `src`, so the browser makes the byte-range requests and handles seeking itself, straight against S3.
 
 ## Getting Started
 

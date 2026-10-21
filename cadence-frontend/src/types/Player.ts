@@ -1,5 +1,11 @@
 import { EachSongDTO } from "./Song";
 
+export interface SongStreamUrlDTO {
+  url: string;
+  // null when the audio is hosted outside our bucket and the URL doesn't expire
+  expiresAt: string | null;
+}
+
 export interface PlayerState {
   currentSong: EachSongDTO | null;
   isPlaying: boolean;

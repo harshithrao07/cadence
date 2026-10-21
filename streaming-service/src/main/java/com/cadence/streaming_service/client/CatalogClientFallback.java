@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 /**
  * Fallback when catalog-service is unreachable for song-streaming metadata.
  *
- * <p>Returns {@code null} — StreamingService.streamSongById already maps a null
+ * <p>Returns {@code null} — StreamingService.getStreamUrl already maps a null
  * metadata to 404, so the user sees "song not found" instead of a 500 / hang.
  */
 @Slf4j

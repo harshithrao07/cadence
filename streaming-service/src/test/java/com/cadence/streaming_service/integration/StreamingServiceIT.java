@@ -1,32 +1,28 @@
 package com.cadence.streaming_service.integration;
 
-import com.amazonaws.services.s3.model.ObjectMetadata;
-import com.amazonaws.services.s3.model.S3Object;
-import com.amazonaws.services.s3.model.S3ObjectInputStream;
 import com.cadence.streaming_service.client.CatalogClient;
+import com.cadence.streaming_service.dto.SongStreamUrlDTO;
 import com.cadence.streaming_service.dto.SongStreamingMetadataDTO;
 import com.cadence.streaming_service.model.PlayHistory;
 import com.cadence.streaming_service.model.PlayHistoryId;
 import com.cadence.streaming_service.repository.PlayHistoryRepository;
 import com.cadence.streaming_service.service.AwsStreamingService;
 import com.cadence.streaming_service.service.StreamingService;
-import org.apache.http.client.methods.HttpGet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -42,7 +38,8 @@ class StreamingServiceIT extends BaseIntegrationTest {
     private static final String USER_ID = "user-1";
     private static final String SONG_ID = "song-1";
     private static final String OBJECT_KEY = "song/song_url/song-1";
-    private static final byte[] AUDIO_BYTES = new byte[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    private static final String OBJECT_URL = "https://test-bucket.s3.amazonaws.com/" + OBJECT_KEY;
+    private static final String PRESIGNED_URL = OBJECT_URL + "?X-Amz-Signature=sig";
 
     @BeforeEach
     void setUp() {
@@ -50,26 +47,13 @@ class StreamingServiceIT extends BaseIntegrationTest {
     }
 
     @Test
-    void streamSongById_streamsFromS3_andRecordsPlay_andReturnsPartialContent() throws Exception {
-        when(catalogClient.getStreamingMetadata(SONG_ID))
-                .thenReturn(new SongStreamingMetadataDTO(SONG_ID, "https://test-bucket.s3.amazonaws.com/" + OBJECT_KEY));
-        when(awsStreamingService.extractKeyFromUrl(anyString())).thenReturn(OBJECT_KEY);
-        when(awsStreamingService.findByName(OBJECT_KEY)).thenReturn(true);
-        when(awsStreamingService.getFileSize(OBJECT_KEY)).thenReturn((long) AUDIO_BYTES.length);
-        when(awsStreamingService.getObjectWithRange(OBJECT_KEY, 0L, 9L)).thenReturn(s3ObjectFor(AUDIO_BYTES, "audio/mpeg"));
+    void getStreamUrl_returnsPresignedUrl_andRecordsPlay_forBucketObject() {
+        givenUploadedBucketObject();
 
-        ResponseEntity<StreamingResponseBody> response = streamingService.streamSongById(SONG_ID, USER_ID, null);
+        SongStreamUrlDTO streamUrl = streamingService.getStreamUrl(SONG_ID, USER_ID).orElseThrow();
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PARTIAL_CONTENT);
-        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_RANGE)).isEqualTo("bytes 0-9/10");
-        assertThat(response.getHeaders().getFirst(HttpHeaders.ACCEPT_RANGES)).isEqualTo("bytes");
-        assertThat(response.getHeaders().getContentType().toString()).isEqualTo("audio/mpeg");
-        assertThat(response.getHeaders().getContentLength()).isEqualTo(10L);
-
-        // Drain the StreamingResponseBody lambda to get coverage on the I/O loop
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        response.getBody().writeTo(out);
-        assertThat(out.toByteArray()).containsExactly(AUDIO_BYTES);
+        assertThat(streamUrl.url()).isEqualTo(PRESIGNED_URL);
+        assertThat(streamUrl.expiresAt()).isCloseTo(Instant.now().plus(Duration.ofHours(1)), within(1, ChronoUnit.MINUTES));
 
         // Real workerService.recordPlay went through to MySQL
         PlayHistory ph = playHistoryRepository.findById(new PlayHistoryId(USER_ID, SONG_ID)).orElseThrow();
@@ -77,117 +61,61 @@ class StreamingServiceIT extends BaseIntegrationTest {
     }
 
     @Test
-    void streamSongById_streamsFromS3_withRangeHeader_serves206_andSubrange() throws Exception {
-        when(catalogClient.getStreamingMetadata(SONG_ID))
-                .thenReturn(new SongStreamingMetadataDTO(SONG_ID, "https://x/" + OBJECT_KEY));
-        when(awsStreamingService.extractKeyFromUrl(anyString())).thenReturn(OBJECT_KEY);
-        when(awsStreamingService.findByName(OBJECT_KEY)).thenReturn(true);
-        when(awsStreamingService.getFileSize(OBJECT_KEY)).thenReturn(100L);
-        when(awsStreamingService.getObjectWithRange(OBJECT_KEY, 10L, 20L))
-                .thenReturn(s3ObjectFor(new byte[11], null));
+    void getStreamUrl_recordsOnePlay_perRequest() {
+        givenUploadedBucketObject();
 
-        ResponseEntity<StreamingResponseBody> response = streamingService.streamSongById(SONG_ID, USER_ID, "bytes=10-20");
+        streamingService.getStreamUrl(SONG_ID, USER_ID);
+        streamingService.getStreamUrl(SONG_ID, USER_ID);
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PARTIAL_CONTENT);
-        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_RANGE)).isEqualTo("bytes 10-20/100");
-        assertThat(response.getHeaders().getContentLength()).isEqualTo(11L);
-        assertThat(response.getHeaders().getContentType().toString()).isEqualTo("audio/mpeg");
-        verify(awsStreamingService).getObjectWithRange(OBJECT_KEY, 10L, 20L);
+        PlayHistory ph = playHistoryRepository.findById(new PlayHistoryId(USER_ID, SONG_ID)).orElseThrow();
+        assertThat(ph.getPlayCount()).isEqualTo(2L);
     }
 
     @Test
-    void streamSongById_streamsFromS3_withOpenEndedRange_clampsToFileSize() throws Exception {
-        when(catalogClient.getStreamingMetadata(SONG_ID))
-                .thenReturn(new SongStreamingMetadataDTO(SONG_ID, "https://x/" + OBJECT_KEY));
-        when(awsStreamingService.extractKeyFromUrl(anyString())).thenReturn(OBJECT_KEY);
-        when(awsStreamingService.findByName(OBJECT_KEY)).thenReturn(true);
-        when(awsStreamingService.getFileSize(OBJECT_KEY)).thenReturn(50L);
-        when(awsStreamingService.getObjectWithRange(OBJECT_KEY, 25L, 49L))
-                .thenReturn(s3ObjectFor(new byte[25], "audio/mp4"));
+    void getStreamUrl_returnsSongUrlUnchanged_forExternalHost() {
+        String external = "https://prod-1.storage.jamendo.com/?trackid=1&format=mp32";
+        when(catalogClient.getStreamingMetadata(SONG_ID)).thenReturn(new SongStreamingMetadataDTO(SONG_ID, external));
+        when(awsStreamingService.bucketObjectKey(external)).thenReturn(Optional.empty());
 
-        ResponseEntity<StreamingResponseBody> response = streamingService.streamSongById(SONG_ID, USER_ID, "bytes=25-");
+        SongStreamUrlDTO streamUrl = streamingService.getStreamUrl(SONG_ID, USER_ID).orElseThrow();
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PARTIAL_CONTENT);
-        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_RANGE)).isEqualTo("bytes 25-49/50");
+        assertThat(streamUrl.url()).isEqualTo(external);
+        assertThat(streamUrl.expiresAt()).isNull();
+        verify(awsStreamingService, never()).generatePresignedGetUrl(anyString(), any());
+        assertThat(playHistoryRepository.count()).isEqualTo(1L);
     }
 
     @Test
-    void streamSongById_streamsFromS3_withInvertedRange_resetsToFullFile() throws Exception {
-        when(catalogClient.getStreamingMetadata(SONG_ID))
-                .thenReturn(new SongStreamingMetadataDTO(SONG_ID, "https://x/" + OBJECT_KEY));
-        when(awsStreamingService.extractKeyFromUrl(anyString())).thenReturn(OBJECT_KEY);
-        when(awsStreamingService.findByName(OBJECT_KEY)).thenReturn(true);
-        when(awsStreamingService.getFileSize(OBJECT_KEY)).thenReturn(20L);
-        when(awsStreamingService.getObjectWithRange(OBJECT_KEY, 0L, 19L))
-                .thenReturn(s3ObjectFor(new byte[20], "audio/mpeg"));
+    void getStreamUrl_returnsEmpty_andRecordsNothing_whenUploadMissing() {
+        when(catalogClient.getStreamingMetadata(SONG_ID)).thenReturn(new SongStreamingMetadataDTO(SONG_ID, OBJECT_URL));
+        when(awsStreamingService.bucketObjectKey(OBJECT_URL)).thenReturn(Optional.of(OBJECT_KEY));
+        when(awsStreamingService.findByName(OBJECT_KEY)).thenReturn(false);
 
-        ResponseEntity<StreamingResponseBody> response = streamingService.streamSongById(SONG_ID, USER_ID, "bytes=15-5");
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PARTIAL_CONTENT);
-        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_RANGE)).isEqualTo("bytes 0-19/20");
+        assertThat(streamingService.getStreamUrl(SONG_ID, USER_ID)).isEmpty();
+        assertThat(playHistoryRepository.count()).isZero();
+        verify(awsStreamingService, never()).generatePresignedGetUrl(anyString(), any());
     }
 
     @Test
-    void streamSongById_returns404_whenMetadataMissing() {
+    void getStreamUrl_returnsEmpty_whenMetadataMissing() {
         when(catalogClient.getStreamingMetadata(SONG_ID)).thenReturn(null);
 
-        ResponseEntity<StreamingResponseBody> response = streamingService.streamSongById(SONG_ID, USER_ID, null);
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(streamingService.getStreamUrl(SONG_ID, USER_ID)).isEmpty();
         assertThat(playHistoryRepository.count()).isZero();
     }
 
     @Test
-    void streamSongById_returns404_whenSongUrlIsBlank() {
-        when(catalogClient.getStreamingMetadata(SONG_ID))
-                .thenReturn(new SongStreamingMetadataDTO(SONG_ID, ""));
+    void getStreamUrl_returnsEmpty_whenSongUrlIsBlank() {
+        when(catalogClient.getStreamingMetadata(SONG_ID)).thenReturn(new SongStreamingMetadataDTO(SONG_ID, ""));
 
-        ResponseEntity<StreamingResponseBody> response = streamingService.streamSongById(SONG_ID, USER_ID, null);
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
-        verify(awsStreamingService, never()).findByName(anyString());
+        assertThat(streamingService.getStreamUrl(SONG_ID, USER_ID)).isEmpty();
+        verify(awsStreamingService, never()).bucketObjectKey(anyString());
     }
 
-    @Test
-    void streamSongById_returns500_whenS3ReadThrows() {
-        when(catalogClient.getStreamingMetadata(SONG_ID))
-                .thenReturn(new SongStreamingMetadataDTO(SONG_ID, "https://x/" + OBJECT_KEY));
-        when(awsStreamingService.extractKeyFromUrl(anyString())).thenReturn(OBJECT_KEY);
+    private void givenUploadedBucketObject() {
+        when(catalogClient.getStreamingMetadata(SONG_ID)).thenReturn(new SongStreamingMetadataDTO(SONG_ID, OBJECT_URL));
+        when(awsStreamingService.bucketObjectKey(OBJECT_URL)).thenReturn(Optional.of(OBJECT_KEY));
         when(awsStreamingService.findByName(OBJECT_KEY)).thenReturn(true);
-        when(awsStreamingService.getFileSize(OBJECT_KEY)).thenReturn(100L);
-        when(awsStreamingService.getObjectWithRange(anyString(), anyLong(), anyLong()))
-                .thenThrow(new RuntimeException("s3 down"));
-
-        ResponseEntity<StreamingResponseBody> response = streamingService.streamSongById(SONG_ID, USER_ID, null);
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
-    @Test
-    void streamSongById_skipsS3_andFallsThroughToExternalUrl_whenObjectMissing() {
-        // External URL fall-through opens an HttpURLConnection — we can't reach a real host in a test.
-        // The service catches the exception and returns 500, which exercises the fall-through branch.
-        when(catalogClient.getStreamingMetadata(SONG_ID))
-                .thenReturn(new SongStreamingMetadataDTO(SONG_ID, "http://example.invalid/song.mp3"));
-        when(awsStreamingService.extractKeyFromUrl(anyString())).thenReturn(OBJECT_KEY);
-        when(awsStreamingService.findByName(OBJECT_KEY)).thenReturn(false);
-
-        ResponseEntity<StreamingResponseBody> response = streamingService.streamSongById(SONG_ID, USER_ID, null);
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        verify(awsStreamingService, never()).getObjectWithRange(any(), anyLong(), anyLong());
-    }
-
-    private static S3Object s3ObjectFor(byte[] bytes, String contentType) {
-        S3Object obj = new S3Object();
-        obj.setObjectContent(new S3ObjectInputStream(new ByteArrayInputStream(bytes), new HttpGet()));
-        if (contentType != null) {
-            ObjectMetadata md = new ObjectMetadata();
-            md.setContentType(contentType);
-            obj.setObjectMetadata(md);
-        } else {
-            obj.setObjectMetadata(new ObjectMetadata());
-        }
-        return obj;
+        when(awsStreamingService.generatePresignedGetUrl(eq(OBJECT_KEY), any(Instant.class))).thenReturn(PRESIGNED_URL);
     }
 }

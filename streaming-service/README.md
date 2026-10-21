@@ -19,7 +19,7 @@ flowchart TB
     sc --> ss[StreamingService<br/>stream a song]
     sc --> phs[PlayHistoryService<br/>aggregations]
     ss --> ws[WorkerService<br/>recordPlay]
-    ss --> ass[AwsStreamingService<br/>ranged S3 reads]
+    ss --> ass[AwsStreamingService<br/>presigned GET URLs]
 
     ss -.->|Feign: streaming metadata| catalog[catalog-service]
     ws & phs --> db[(streaming_db<br/>play_history · outbox · processed_events)]
@@ -31,6 +31,21 @@ flowchart TB
 ```
 
 `WorkerService.recordPlay` is the only write path; everything else is read-side aggregation.
+
+## Streaming a Song
+
+streaming-service never relays audio bytes. `GET /song/{songId}` looks the song's `song_url` up in catalog-service and
+returns where the client should play it from, as `ApiResponseDTO<{ url, expiresAt }>`:
+
+| `song_url` | Response |
+|---|---|
+| An object URL in our bucket, object present | Presigned GET URL, valid for 1 hour (`StreamingService.URL_TTL`) |
+| An object URL in our bucket, object missing (upload never finished) | 404, no play recorded |
+| Any other host (e.g. seeded tracks) | `song_url` unchanged, `expiresAt` null |
+| Unknown song / no `song_url` | 404 |
+
+Each successful call records exactly one play. The browser uses the URL as an `<audio>` `src` and makes its own range
+requests against S3, so seeking and buffering don't come back through the gateway.
 
 ## Recording a Play
 
@@ -82,7 +97,7 @@ All routes under `/api/v1/stream` and reachable through the gateway.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/song/{songId}` | user | Returns S3 signed URL for the song's audio file |
+| GET | `/song/{songId}` | user | Records a play and returns the URL to play the song from (presigned S3 GET, 1 h) |
 | GET | `/history` | user | Recent play history for `X-User-Id` |
 | GET | `/stats/users/me/top-songs` | user | Top songs for `X-User-Id` |
 | GET | `/stats/trending?since=&page=&size=` | public | Platform-wide trending; `since` filters by Instant |
@@ -127,7 +142,7 @@ Consumption goes through cadence-messaging (envelope decoding, idempotent `proce
 ## Cross-Cutting Concerns
 
 - **Outbound Feign call** to `CatalogClient.getStreamingMetadata` goes through `FeignClientConfig.gatewaySecretInterceptor` which stamps `X-Gateway-Secret` on every request. Required for catalog-service's `InternalTrafficFilter` to accept the call.
-- **Resilience4j circuit breaker** wraps `CatalogClient`. `CatalogClientFallback` returns null on catalog outage — `streamSongById` already maps null metadata to 404, so the user sees "song not found" instead of a 500 / hang.
+- **Resilience4j circuit breaker** wraps `CatalogClient`. `CatalogClientFallback` returns null on catalog outage — `getStreamUrl` already maps null metadata to 404, so the user sees "song not found" instead of a 500 / hang.
 - **`/actuator/refresh` rebinds `gateway.secret`** via `GatewaySecretProperties` for hot rotation without a restart.
 
 ## Configuration
@@ -153,6 +168,8 @@ From `centralconfigs/streaming-service/streaming-service.properties`:
 | `WorkerServiceTest` | Find-or-create + increment with mocked repository |
 | `PlayHistoryServiceTest` | Aggregation methods over mocked repository projections |
 | `StreamingControllerTest` | `@WebMvcTest` slice — HTTP wiring + header validation |
+| `AwsStreamingServiceTest` | Bucket-URL detection and presigned GET generation with a mocked `AmazonS3` |
+| `StreamingServiceIT` | Real MySQL — presigned vs external vs missing-upload resolution, one play recorded per call |
 | `InternalTrafficFilterTest` | Gateway-secret enforcement |
 | `PlayHistoryIT` | Real MySQL — covers `@EmbeddedId` upsert, `lastPlayedAt` auto-update, JPQL aggregations (`SUM`/`GROUP BY`/`COUNT(DISTINCT)`), time-windowed filters with real `Instant` boundaries |
 
