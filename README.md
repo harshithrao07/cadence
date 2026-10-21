@@ -20,6 +20,7 @@ The platform is built around the principle that **one service owns one bounded c
 - [Persistence Model](#persistence-model)
 - [Repository Layout](#repository-layout)
 - [Per-Environment Profiles](#per-environment-profiles)
+- [Observability](#observability)
 - [Testing](#testing)
 - [Performance](#performance)
 - [System Design Talking Points](#system-design-talking-points)
@@ -29,7 +30,7 @@ The platform is built around the principle that **one service owns one bounded c
 
 ## Getting Started
 
-The whole stack is dockerised — one command brings up MySQL, Kafka, all 8 backend services, and the frontend.
+The whole stack is dockerised — one command brings up MySQL, Kafka, all 8 backend services, the frontend, and the observability stack (Loki, Prometheus, Tempo, Grafana).
 
 ```bash
 git clone https://github.com/harshithrao07/cadence.git
@@ -58,6 +59,10 @@ Useful local URLs:
 | Config Server | `http://localhost:8888` | `GET /<service>/<profile>` to inspect served config |
 | Kafka broker | `localhost:9092` | KRaft, single broker, no Zookeeper |
 | MySQL | `localhost:3306` | One schema per service (`auth_db`, `catalog_db`, `playlist_db`, `streaming_db`), each with its own user (`auth_svc`, …; dev passwords in `compose.yaml`). Admin: `root` / `password` |
+| **Grafana** | `http://localhost:3001` | Logs, metrics and traces in one place; the *Cadence Overview* dashboard. No login (anonymous admin) |
+| Prometheus | `http://localhost:9090` | Metrics; `/targets` shows which services are being scraped |
+| Tempo | `http://localhost:3110` | Trace store (Zipkin receiver on `9411`) — browse it through Grafana |
+| Loki | `http://localhost:3102` | Log store — browse it through Grafana |
 
 ### Running locally without Docker
 
@@ -87,7 +92,7 @@ Tests use Testcontainers — they spin up their own MySQL + Kafka containers, in
 
 ```bash
 docker compose down            # stop containers, keep data
-docker compose down -v         # stop + wipe MySQL and Kafka volumes
+docker compose down -v         # stop + wipe MySQL, Kafka and Loki volumes
 ```
 
 ---
@@ -283,6 +288,7 @@ Delivery is handled by the shared [cadence-messaging](cadence-messaging/) auto-c
 - **Idempotent consumers.** `IdempotentEventHandler` records `(handler, eventId)` in `processed_events` in the consumer's transaction, so redeliveries are skipped. notification-service has no database and may send a duplicate email on redelivery.
 - **Retries + DLT.** 4 exponential retries (1 s → 10 s), then the record goes to `<topic>.DLT`; malformed messages skip the retries.
 - **Saga tracing.** Log lines carry `[saga:<id>]`; events published while handling an event keep its `sagaId`.
+- **Distributed tracing across the outbox.** The outbox row stores the request's `traceparent`; the relay continues that trace and puts its headers on the Kafka record, and listeners join it, so a whole saga is one trace in Tempo (see [Observability](#observability)).
 
 See [docs/db-per-service-saga-plan.md](docs/db-per-service-saga-plan.md) for the database-per-service migration this is part of.
 
@@ -481,7 +487,8 @@ flowchart LR
 ```
 
 Dotted lines are references by id only (no foreign key across schemas), kept consistent by events and sagas. Every
-schema also holds its service's `outbox` and `processed_events`.
+schema also holds its service's `outbox` and `processed_events`. `outbox.traceparent` (nullable) carries the trace of
+the request that wrote the row; see [Per-Environment Profiles](#per-environment-profiles) for adding it under `validate`.
 
 Column-level detail (diagram from before the split; the tables are unchanged apart from the additions above):
 
@@ -510,10 +517,14 @@ cadence/
 ├── cadence-messaging/          # auto-config: transactional outbox + relay, idempotent consumers, DLT, saga ids
 ├── cadence-frontend/           # Next.js client (separate workspace)
 ├── cadence-seed/               # bulk-loads fake data into all four schemas
-├── docker/mysql/init/          # creates the per-service schemas and MySQL users
+├── docker/
+│   ├── mysql/init/             # creates the per-service schemas and MySQL users
+│   ├── prometheus/             # scrape config (one job per service)
+│   ├── tempo/                  # Tempo config (Zipkin receiver, local storage)
+│   └── grafana/                # provisioned data sources + dashboards/ (Cadence Overview)
 ├── docs/                       # design notes (db-per-service + saga plan)
 ├── pom.xml                     # build aggregator (not a parent) — builds the shared modules before the services
-├── compose.yaml                # the whole stack: MySQL, Kafka, services, frontend
+├── compose.yaml                # the whole stack: MySQL, Kafka, services, frontend, Loki/Prometheus/Tempo/Grafana
 ├── env.properties              # local secrets — gitignored
 ├── run-all-tests.sh            # runs unit + IT across every service
 ├── TESTING.md                  # test layout, IT setup, Docker workarounds
@@ -534,6 +545,71 @@ cadence/
 | `prod` | `validate` | off | none (no leakage) | WARN |
 
 Activate with `SPRING_PROFILES_ACTIVE=dev`. Per-service profile files (`<service>-<profile>.properties`) live alongside the base file in `centralconfigs/<service>/`.
+
+Under `validate` (qa, prod) Hibernate won't create new columns, so schema changes have to be applied by hand before
+deploying. Currently pending: the outbox's trace column, in `auth_db`, `catalog_db`, `playlist_db` and `streaming_db`:
+
+```sql
+ALTER TABLE outbox ADD COLUMN traceparent VARCHAR(55) NULL;
+```
+
+---
+
+## Observability
+
+Every service ships logs, metrics and traces; compose runs the stores and Grafana to look at them.
+
+| Signal | Produced by | Stored in | Answers |
+|---|---|---|---|
+| Logs | `loki-logback-appender` via each service's `logback-spring.xml`; labels `application`, `host`, `level` | Loki | *What did the code say happened?* |
+| Metrics | Micrometer → `/actuator/prometheus`, every meter tagged `application`; scraped every 2 s (`docker/prometheus/prometheus.yml`) | Prometheus | *How is the system doing overall?* |
+| Traces | Micrometer Tracing (Brave) → Zipkin protocol, 100 % sampled | Tempo | *Where did this one request spend its time?* |
+
+A trace covers HTTP handling in each service, Feign calls (`feign-micrometer`), JDBC connections, queries (with the
+SQL) and result sets (`datasource-micrometer`), repository methods (`@Observed` on every repository interface), and
+Kafka hops through the outbox.
+
+**Moving between the three.** Every log line carries `[<traceId>-<spanId>]`. In Grafana (Explore):
+
+- **log → trace**: expand a Loki line, then *TraceID* → *Tempo*.
+- **trace → logs**: the document icon on a span opens that service's lines for the trace.
+- **metric → trace**: on latency graphs, exemplars (diamonds) are real requests; *Query with Tempo* opens one.
+
+Typical flow: a graph shows something is wrong, a trace shows where, the logs show the details.
+
+**Dashboard.** Grafana → Dashboards → Cadence → **Cadence Overview**, provisioned from
+`docker/grafana/dashboards/cadence-overview.json`: health tiles, HTTP traffic / latency / 5xx / slowest endpoints,
+database, Kafka (consumed messages, consumer lag), JVM, and recent warnings and errors. The *Service* dropdown filters
+every panel. Grafana has no volume, so edits made in the UI are lost when the container is recreated: export the JSON
+(Share → Export) and replace the file to keep them.
+
+**Traces through the outbox.** `JpaOutboxPublisher` stores the current W3C `traceparent` in `outbox.traceparent`;
+`PollingOutboxRelay` starts a producer span continuing it and writes that span's headers on the Kafka record;
+listeners (`spring.kafka.listener.observation-enabled=true`) join the trace. So the registration, song-deletion and
+account-deletion sagas each show up as one trace from the request that started them. Tracing is optional in
+cadence-messaging: a service without a tracer writes untraced rows.
+
+**Configuration.**
+
+| Setting | Where | Default |
+|---|---|---|
+| `LOKI_URL` | env (compose sets it per service) | `http://localhost:3100/loki/api/v1/push` |
+| `ZIPKIN_URL` | env (compose sets it per service) | `http://localhost:9411/api/v2/spans` |
+| `management.tracing.sampling.probability` | `centralconfigs/global/application.properties` | `1.0` |
+| `management.metrics.tags.application` | same | `${spring.application.name}` |
+
+The defaults point at localhost for a service run from the IDE; with the dockerised stack that's Loki on host port
+`3102`, so set `LOKI_URL=http://localhost:3102/loki/api/v1/push` there. Tests run with the `test` profile, which
+leaves the Loki appender out; Spring Boot doesn't export traces from tests.
+
+**Good to know.**
+
+- Logs reach Loki in batches, up to about a minute after they're written; an empty search right after a request
+  usually just needs a re-run.
+- discovery-service and config-server are left out of the dashboard's HTTP panels (their traffic is Eureka
+  heartbeats and config fetches) but are in the JVM panels.
+- 100 % sampling, a 2 s scrape interval and anonymous admin access to Grafana are local-development settings; change
+  them before a shared environment.
 
 ---
 
@@ -673,6 +749,7 @@ docker run --rm --network cadence_default \
 - **`spring.config.import=optional:`** for both env file and config server. A service starts even if either is missing — tests in particular rely on this so they don't need the whole stack running.
 - **Database per service, enforced by the database.** One schema and one MySQL user per service with grants on its own schema only — a cross-service query isn't a convention violation, it's a permission error. Moving a service to its own server is a `DATASOURCE_*` change.
 - **Transactional outbox instead of dual writes.** Writing the row and calling Kafka separately can lose events (Kafka down) or publish phantoms (rollback). The event is inserted into the service's `outbox` in the same transaction; a relay (`FOR UPDATE SKIP LOCKED`, safe with several instances) delivers it at least once. Permanent Kafka errors park the row; a retriable failure only holds back its own topic. Columns follow Debezium's outbox router so CDC can replace polling.
+- **Traces survive the outbox.** An outbox breaks the request's thread (a poller sends the event later), which normally splits a saga into unrelated traces. Storing `traceparent` on the row and continuing it in the relay keeps request → outbox → Kafka → consumer → next step in one trace.
 - **At-least-once + idempotent consumers = effectively once.** Consumers record `(handler, eventId)` in `processed_events` in the same transaction as their change; redeliveries are skipped.
 - **Choreography over orchestration.** The sagas are short (2–3 participants, mostly forward-only), so each service reacts to events instead of a central coordinator; the initiating service tracks the outcome (`users.status`, `user_deletions`) and `sagaId` in every log line keeps it traceable.
 - **Synchronous facade over an async saga.** Registration waits up to 5 s for its saga so the common case keeps the classic 201-with-tokens contract; slow cases degrade to 202.
@@ -694,3 +771,7 @@ docker run --rm --network cadence_default \
 - **`Access denied for user 'auth_svc'` / `Unknown database 'auth_db'`** — the MySQL volume predates the per-service schemas. Run `docker compose exec mysql sh /docker-entrypoint-initdb.d/01-service-schemas.sh` once (Git Bash: prefix `MSYS_NO_PATHCONV=1`).
 - **Signup answers 202 / login says the account is still being set up** — the registration saga hasn't finished: check that playlist-service is running and consuming `auth.user-registered`. It completes on its own once playlist catches up.
 - **An event never arrives** — look at the producer's `outbox` table: `sent_at` NULL with `failed_at` set means Kafka rejected it permanently (see `last_error`; set `failed_at` back to NULL to retry). Messages a consumer couldn't handle are on `<topic>.DLT`.
+- **Services exit with `Failed to configure a DataSource: 'url' attribute is not specified`** — they started before config-server was ready. `docker compose restart` doesn't wait for health checks; use `docker compose up -d`, which does. Do the same after rebuilding config-server for a `centralconfigs` change.
+- **A Prometheus target is down with `404` on `/actuator/prometheus`** — that service started without config-server's config, so the endpoint isn't exposed. Restart it once config-server is healthy.
+- **A request's logs aren't in Loki yet** — they're sent in batches, up to about a minute late. If they never arrive, check the service's `LOKI_URL`.
+- **`HHH90003004: firstResult/maxResults specified with collection fetch; applying in memory`** (catalog warnings) — a paginated query fetches a collection, so Hibernate pages in memory instead of in SQL. Harmless with seed data; a performance fix for larger tables.
