@@ -45,3 +45,6 @@ HELP.md
 
 # Claude Code session data
 .claude/
+
+# Tempo trace data (docker/tempo bind mount)
+docker/tempo/tempo-data/

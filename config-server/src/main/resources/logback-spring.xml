@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+    <springProperty scope="context" name="appName" source="spring.application.name"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- Tests run with the "test" profile and have no Loki to push to. -->
+    <springProfile name="!test">
+        <appender name="LOKI" class="com.github.loki4j.logback.Loki4jAppender">
+            <http>
+                <url>${LOKI_URL:-http://localhost:3100/loki/api/v1/push}</url>
+            </http>
+            <labels>
+                application=${appName}
+                host=${HOSTNAME}
+                level=%level
+            </labels>
+            <message>
+                <pattern>${FILE_LOG_PATTERN}</pattern>
+            </message>
+        </appender>
+
+        <root>
+            <appender-ref ref="LOKI"/>
+        </root>
+    </springProfile>
+</configuration>

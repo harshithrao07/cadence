@@ -2,6 +2,7 @@ package com.cadence.streaming_service.repository;
 
 import com.cadence.streaming_service.model.PlayHistory;
 import com.cadence.streaming_service.model.PlayHistoryId;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -11,6 +12,7 @@ import org.springframework.data.repository.query.Param;
 import java.util.Collection;
 import java.util.List;
 
+@Observed
 public interface PlayHistoryRepository extends JpaRepository<PlayHistory, PlayHistoryId> {
     @Modifying
     @Query("DELETE FROM PlayHistory ph WHERE ph.id.songId IN :songIds")

@@ -3,6 +3,7 @@ package com.cadence.messaging.outbox;
 import com.cadence.messaging.MessagingProperties;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.ApiException;
 import org.apache.kafka.common.errors.RetriableException;
 import org.slf4j.Logger;
@@ -50,6 +51,7 @@ public class PollingOutboxRelay implements SmartLifecycle {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final TransactionTemplate transactionTemplate;
     private final MessagingProperties.Outbox properties;
+    private final OutboxTracing tracing;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -60,9 +62,17 @@ public class PollingOutboxRelay implements SmartLifecycle {
     public PollingOutboxRelay(KafkaTemplate<String, String> kafkaTemplate,
                               TransactionTemplate transactionTemplate,
                               MessagingProperties.Outbox properties) {
+        this(kafkaTemplate, transactionTemplate, properties, OutboxTracing.NOOP);
+    }
+
+    public PollingOutboxRelay(KafkaTemplate<String, String> kafkaTemplate,
+                              TransactionTemplate transactionTemplate,
+                              MessagingProperties.Outbox properties,
+                              OutboxTracing tracing) {
         this.kafkaTemplate = kafkaTemplate;
         this.transactionTemplate = transactionTemplate;
         this.properties = properties;
+        this.tracing = tracing;
     }
 
     /**
@@ -83,9 +93,15 @@ public class PollingOutboxRelay implements SmartLifecycle {
                 if (blockedTopics.contains(event.getTopic())) {
                     continue;
                 }
-                try {
-                    kafkaTemplate.send(event.getTopic(), event.getAggregateId(), event.getPayload())
-                            .get(properties.getSendTimeout().toMillis(), TimeUnit.MILLISECONDS);
+                ProducerRecord<String, String> record =
+                        new ProducerRecord<>(event.getTopic(), event.getAggregateId(), event.getPayload());
+                try (OutboxTracing.SendSpan span = tracing.startSend(event.getTraceparent(), event.getTopic(), record.headers())) {
+                    try {
+                        kafkaTemplate.send(record).get(properties.getSendTimeout().toMillis(), TimeUnit.MILLISECONDS);
+                    } catch (Exception e) {
+                        span.error(e);
+                        throw e;
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;

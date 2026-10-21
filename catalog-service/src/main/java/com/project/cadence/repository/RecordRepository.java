@@ -5,6 +5,7 @@ import com.project.cadence.dto.record.RecordPreviewWithCoverImageDTO;
 import com.project.cadence.model.Artist;
 import com.project.cadence.model.Record;
 import com.project.cadence.model.Song;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Query;
@@ -13,6 +14,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 
+@Observed
 public interface RecordRepository extends CrudRepository<Record, String> {
     List<Record> findByArtistsOrderByReleaseTimestampDesc(Artist artist, Pageable of);
 
