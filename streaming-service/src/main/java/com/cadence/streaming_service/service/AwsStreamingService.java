@@ -1,14 +1,12 @@
 package com.cadence.streaming_service.service;
 
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.model.GetObjectRequest;
-import com.amazonaws.services.s3.model.ObjectMetadata;
-import com.amazonaws.services.s3.model.S3Object;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -31,14 +29,16 @@ public class AwsStreamingService {
         }
     }
 
-    public S3Object getObjectWithRange(String key, long start, long end) {
-        GetObjectRequest request = new GetObjectRequest(s3BucketName, key);
-        request.setRange(start, end);
-        return amazonS3.getObject(request);
-    }
-
-    public long getFileSize(String key) {
-        ObjectMetadata metadata = amazonS3.getObjectMetadata(s3BucketName, key);
-        return metadata.getContentLength();
+    /** The object key if songUrl is an object URL in our bucket (as catalog-service stores it); empty otherwise. */
+    public Optional<String> bucketObjectKey(String songUrl) {
+        try {
+            String key = extractKeyFromUrl(songUrl);
+            if (key.isEmpty() || !amazonS3.getUrl(s3BucketName, key).toString().equals(songUrl)) {
+                return Optional.empty();
+            }
+            return Optional.of(key);
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
     }
 }

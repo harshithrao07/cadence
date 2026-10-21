@@ -16,6 +16,7 @@ The platform is built around the principle that **one service owns one bounded c
 - [Eventing (Kafka)](#eventing-kafka)
 - [Data Ownership & Sagas](#data-ownership--sagas)
 - [Inter-Service Authentication](#inter-service-authentication)
+- [Media Storage & Delivery](#media-storage--delivery)
 - [REST API](#rest-api)
 - [Persistence Model](#persistence-model)
 - [Repository Layout](#repository-layout)
@@ -36,7 +37,8 @@ The whole stack is dockerised — one command brings up MySQL, Kafka, all 8 back
 git clone https://github.com/harshithrao07/cadence.git
 cd cadence
 
-# 1. Create env.properties at the repo root (see Centralized Configuration)
+# 1. Create env.properties at the repo root (see Centralized Configuration), and put the
+#    CloudFront signing key at secrets/cloudfront_private_key.pem (see Media Storage & Delivery)
 
 # 2. Build and start everything
 docker compose up --build -d
@@ -196,7 +198,7 @@ Two filters bracket every request:
 | [auth-service](auth-service/) | 8085 | Yes | `auth_db`: `users`, `email_verification_token`, `user_deletions` | Producer + consumer | Registration, login, JWT issuance, OAuth2 (Google), email verification. Coordinates the registration and account-deletion sagas. |
 | [catalog-service](catalog-service/) | 8084 | Yes | `catalog_db`: `artist`, `record`, `song`, `genre`, join tables, `artist_following`, `user_replica` | Producer + consumer | Artists/records/songs/genres CRUD, S3 uploads, follow/unfollow, discovery. |
 | [playlist-service](playlist-service/) | 8082 | Yes | `playlist_db`: `playlist`, `playlist_songs`, `liked_playlists` | Producer + consumer | User playlists + the system Liked Songs playlist (registration saga participant). |
-| [streaming-service](streaming-service/) | 8083 | Yes | `streaming_db`: `play_history` | Producer + consumer | Play-history aggregation, trending songs, listener counts. |
+| [streaming-service](streaming-service/) | 8083 | Yes | `streaming_db`: `play_history` | Producer + consumer | CloudFront signed song URLs, play counting, play-history aggregation, trending songs, listener counts. |
 | [notification-service](notification-service/) | 8081 | No (consumer-only) | — | Consumer | SMTP email sender driven by Kafka events. |
 
 Every schema also has an `outbox` table (events waiting to be relayed) and a `processed_events` table (events this
@@ -249,6 +251,9 @@ AWS_ACCESS_KEY=...
 AWS_SECRET_KEY=...
 AWS_REGION=us-east-1
 AWS_S3_BUCKET=...
+AWS_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net
+AWS_CLOUDFRONT_KEY_PAIR_ID=...
+AWS_CLOUDFRONT_PRIVATE_KEY_PATH=D:/cadence/secrets/cloudfront_private_key.pem   # compose mounts this file itself
 
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
@@ -415,6 +420,71 @@ flowchart LR
 
 ---
 
+## Media Storage & Delivery
+
+All uploaded media lives in one S3 bucket (`AWS_S3_BUCKET`), keyed `<table>/<column>/<id>`:
+
+| Folder | Contents | Read by the browser through |
+|---|---|---|
+| `song/song_url/` | Song audio | CloudFront, signed URLs only |
+| `record/cover_url/`, `artist/profile_url/` | Record covers, artist pictures | Plain S3 URL (public read) |
+| `users/profile_url/`, `playlist/cover_url/` | Avatars, playlist covers | Plain S3 URL (public read) |
+
+**Uploads** never go through CloudFront. Song audio is `PUT` by the browser straight to S3 with a presigned URL from
+catalog-service, so the bytes never touch the backend. Images are posted to catalog-service (`POST /api/v1/files`),
+which writes them to S3. Both are signed by the app's IAM user; see [catalog-service](catalog-service/README.md#file-uploads).
+
+**Playback** never goes through the backend either:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser player
+    participant SS as streaming-service
+    participant CF as CloudFront
+    participant S3 as S3 (private)
+
+    B->>SS: GET /api/v1/stream/song/{id}
+    SS->>SS: object exists? sign CloudFront URL (1 h)
+    SS-->>B: { url, expiresAt }
+    B->>CF: GET signed URL (byte ranges, seeking)
+    CF->>S3: on cache miss, via Origin Access Control
+    CF-->>B: audio, cached at the edge for every listener
+    B->>SS: POST /api/v1/stream/song/{id}/plays (once playback starts)
+    Note over B,SS: Meanwhile the player fetches the next song's URL<br/>and buffers it in a hidden audio element
+```
+
+Fetching a URL records nothing, so the player can preload the next song; the play is counted once it actually starts.
+Songs with audio hosted elsewhere (the seeded Jamendo tracks) get their own URL back unchanged. Details in
+[streaming-service](streaming-service/README.md#streaming-a-song).
+
+### AWS setup
+
+1. **IAM user** for the app (`AWS_ACCESS_KEY` / `AWS_SECRET_KEY`), with only this bucket:
+   `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on `arn:aws:s3:::<bucket>/*` and `s3:ListBucket` on
+   `arn:aws:s3:::<bucket>` (needed so a missing object is a 404, not a 403). No CloudFront permissions: URL signing is local.
+2. **Signing key pair**: generate it locally and upload only the public half to CloudFront (Key management → Public
+   keys; its ID is `AWS_CLOUDFRONT_KEY_PAIR_ID`), then add it to a key group.
+   ```bash
+   openssl genrsa -out secrets/cloudfront_private_key.pem 2048
+   openssl rsa -pubout -in secrets/cloudfront_private_key.pem -out secrets/cloudfront_public_key.pem
+   ```
+   `secrets/` is gitignored. Compose mounts `secrets/cloudfront_private_key.pem` into streaming-service; outside
+   Docker, `AWS_CLOUDFRONT_PRIVATE_KEY_PATH` points at it.
+3. **CloudFront distribution** (`AWS_CLOUDFRONT_DOMAIN`): origin is the bucket with an empty origin path and Origin
+   Access Control; behaviors restrict viewer access to the trusted key group and use the `CachingOptimized` policy
+   (query strings stay out of the cache key, so every listener's differently signed URL shares one cached copy).
+4. **Bucket policy**: the CloudFront service principal (scoped by `AWS:SourceArn` to the distribution) may
+   `s3:GetObject`; everyone may `s3:GetObject` on the four image folders only. Block Public Access stays on except
+   the two settings about bucket policies.
+5. **Bucket CORS**: allow `PUT` and `DELETE` from the frontend's origin (`http://localhost:3000` locally) with any
+   headers, exposing `ETag`. Without it the browser's presigned song upload fails its preflight.
+
+After changing CloudFront config, rebuild config-server along with streaming-service: the central configs are baked
+into the config-server image.
+
+---
+
 ## REST API
 
 All public routes are reachable through the gateway at `:8080`. Most responses wrap the payload in `ApiResponseDTO<T>`.
@@ -432,7 +502,7 @@ All public routes are reachable through the gateway at `:8080`. Most responses w
 | `/api/v1/files` | catalog-service | S3 upload/download |
 | `/api/v1/search`, `/api/v1/discover` | catalog-service | Search + discovery |
 | `/api/v1/playlist` | playlist-service | Playlists, liking, song add/remove |
-| `/api/v1/stream` | streaming-service | Streaming + play-history stats |
+| `/api/v1/stream` | streaming-service | Signed song URLs, play recording, play-history stats |
 
 Endpoint-level detail lives in each service's README.
 
@@ -756,6 +826,7 @@ docker run --rm --network cadence_default \
 - **Replicas, not cross-service joins.** catalog keeps `user_replica` from `auth.user-updated` (older snapshots ignored by `occurredAt`), so follower lists and release emails don't call auth.
 - **Kafka is the async fan-out.** Producers and consumers don't share a request lifecycle; a registration completing successfully doesn't block on the email actually being sent. Consumer crashes/lag don't break user-facing flows.
 - **Topics auto-created by producers.** `spring.kafka.admin.auto-create=true` plus `NewTopic` beans give a deterministic schema (3 partitions, 1 replica) without provisioning scripts.
+- **Audio bytes never touch the backend.** Songs upload browser → S3 with a presigned PUT and play from CloudFront with a signed URL, so the services only hand out short-lived URLs. The bucket stays private behind Origin Access Control, and every listener's signed URL hits the same edge-cached copy. Getting a URL is separate from counting a play, which lets the player preload the next song without inflating play counts.
 - **Containers reused across test classes.** `BaseIntegrationTest` starts MySQL/Kafka in a `static {}` block instead of `@Container`, so multiple ITs in one JVM share one container — saves ~10s startup per test class.
 
 ---

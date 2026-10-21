@@ -3,6 +3,8 @@ env.properties
 *.env
 .env
 .env.local
+secrets/
+*.pem
 
 # Maven
 target/

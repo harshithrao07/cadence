@@ -3,6 +3,13 @@ import { toast } from "sonner";
 import { ApiResponseDTO } from "../types/ApiResponse";
 import { AuthenticationResponseDTO } from "@/types/Auth";
 
+declare module "axios" {
+  interface AxiosRequestConfig {
+    // Skip the error toast, for background requests the user didn't trigger
+    silentErrors?: boolean;
+  }
+}
+
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL,
   headers: {
@@ -110,10 +117,10 @@ api.interceptors.response.use(
             return Promise.reject(refreshError);
           }
         }
-      } else if (status >= 400) {
+      } else if (status >= 400 && !originalRequest?.silentErrors) {
         toast.error(data?.message || "An error occurred. Please try again.");
       }
-    } else {
+    } else if (!originalRequest?.silentErrors) {
       toast.error("Network error. Please check your connection.");
     }
 
